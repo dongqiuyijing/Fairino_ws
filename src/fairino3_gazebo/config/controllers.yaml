@@ -1,0 +1,88 @@
+gz_ros2_control:
+  ros__parameters:
+
+    # position 接口由 Gazebo 转换成速度指令；提高比例增益可使 5 mm 夹指行程及时跟踪。
+    position_proportional_gain: 1.0
+
+
+controller_manager:
+  ros__parameters:
+
+    update_rate: 100
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    fairino3_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    gripper_left_controller:
+      type: effort_controllers/GripperActionController
+
+    gripper_right_controller:
+      type: effort_controllers/GripperActionController
+
+
+fairino3_controller:
+  ros__parameters:
+
+    joints:
+      - j1
+      - j2
+      - j3
+      - j4
+      - j5
+      - j6
+
+    command_interfaces:
+      - position
+
+    state_interfaces:
+      - position
+      - velocity
+
+    allow_partial_joints_goal: false
+
+    # Gazebo 的物理关节无法在浮点意义上“完全相等”；不给容差会让
+    # FollowJointTrajectory 一直等待结果，即使机械臂已经到达目标附近。
+    constraints:
+      # 原来的 2 秒正是报错中的 "exceeding by 2.010000 seconds" 所指的
+      # 额外完成窗口。Gazebo 物理仿真在大幅度关节运动后需要更长时间稳定。
+      stopped_velocity_tolerance: 0.10
+      goal_time: 10.0
+      j1: {trajectory: 0.8, goal: 0.08}
+      j2: {trajectory: 0.8, goal: 0.08}
+      j3: {trajectory: 0.8, goal: 0.08}
+      j4: {trajectory: 0.8, goal: 0.08}
+      j5: {trajectory: 0.8, goal: 0.08}
+      j6: {trajectory: 0.8, goal: 0.08}
+
+
+# 位置误差 → PID → 有限 effort → Gazebo JointForceCmd。
+# 碰到零件后应 stall，而不是强制到达完全闭合位置。
+gripper_left_controller:
+  ros__parameters:
+
+    joint: rail_2_slider_l
+    goal_tolerance: 0.002
+    max_effort: 25.0
+    allow_stalling: true
+    stall_velocity_threshold: 0.002
+    stall_timeout: 1.0
+    action_monitor_rate: 20.0
+    gains:
+      rail_2_slider_l: {p: 400.0, i: 0.0, d: 12.0, i_clamp: 0.0}
+
+
+gripper_right_controller:
+  ros__parameters:
+
+    joint: rail_2_slider_r
+    goal_tolerance: 0.002
+    max_effort: 25.0
+    allow_stalling: true
+    stall_velocity_threshold: 0.002
+    stall_timeout: 1.0
+    action_monitor_rate: 20.0
+    gains:
+      rail_2_slider_r: {p: 400.0, i: 0.0, d: 12.0, i_clamp: 0.0}

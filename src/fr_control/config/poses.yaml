@@ -1,0 +1,40 @@
+# FR3 MoveIt 姿态配置。改目标只改这个文件，不必改 Python。
+#
+# Home 使用 Gazebo 启动时的关节角（与 SRDF pos1 / gz_ros2_control 初值一致）。
+# Pose A / Pose B 是末端 gripper_tcp 在 base_link 下的笛卡尔 Pose，
+# 由 Home 关节角只旋转 j1 后做正运动学得到，高度保持约 0.237 m，避开桌面。
+
+move_group: fairino3_v6_group
+ee_link: gripper_tcp
+base_frame: base_link
+
+velocity_scale: 0.2
+acceleration_scale: 0.2
+planning_time: 5.0
+planning_attempts: 10
+position_tolerance: 0.005
+orientation_tolerance: 0.05
+settle_seconds: 0.5
+
+sequence:
+  - home
+  - pose_a
+  - pose_b
+  - home
+
+poses:
+  home:
+    type: joints
+    joints: [2.4468, -1.6214, 1.5465, -1.5877, -1.6368, 0.0]
+
+  pose_a:
+    type: pose
+    frame: base_link
+    position: [0.164402, -0.316982, 0.237298]
+    orientation_xyzw: [-0.112663, 0.992027, -0.049327, -0.027503]
+
+  pose_b:
+    type: pose
+    frame: base_link
+    position: [-0.177905, -0.309606, 0.237298]
+    orientation_xyzw: [0.376732, 0.924599, -0.030103, -0.047785]

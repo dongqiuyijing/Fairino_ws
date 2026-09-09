@@ -1,0 +1,67 @@
+# 阶段 3 已知零件抓取。改尺寸/位置只改这个文件。
+#
+# 坐标系：
+# - object / table 的 position 写在 Gazebo world 下。
+# - world_to_base 是单位变换，因此 world 与 base_link 数值相同。
+# - MoveIt 规划与执行使用 planning_frame = base_link，ee_link = gripper_tcp。
+
+move_group: fairino3_v6_group
+ee_link: gripper_tcp
+base_frame: base_link
+planning_frame: base_link
+attach_link: gripper_tcp
+
+velocity_scale: 1
+acceleration_scale: 0.3
+planning_time: 8.0
+planning_attempts: 12
+position_tolerance: 0.008
+orientation_tolerance: 0.08
+tcp_tolerance: 0.025
+pose_attempts: 3
+
+home:
+  joints: [2.4468, -1.6214, 1.5465, -1.5877, -1.6368, 0.0]
+
+table:
+  name: table
+  frame: world
+  size: [0.5, 0.5, 0.05]
+  position: [0.5, 0.0, 0.05]
+  orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+# 与 fairino3_gazebo/worlds/inspection_world.sdf 中 small_part 一致。
+# 20 × 40 × 20 mm 测试件；真实目标约 5 × 20 × 5 mm。
+object:
+  name: small_part
+  frame: world
+  size: [0.020, 0.040, 0.020]
+  mass: 0.03
+  position: [0.5, 0.0, 0.085]
+  orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+grasp:
+  # gripper_tcp +z 指向夹爪前方（离开法兰）。俯抓时 TCP +z 朝世界 -z。
+  # rpy=(pi, 0, 0) 使 TCP x 与世界 x 对齐，从而夹持零件 20 mm 宽度。
+  approach_rpy: [3.141592653589793, 0.0, 0.0]
+  pre_grasp_offset: 0.08
+  lift_height: 0.08
+  table_top_z: 0.075
+  # hkv_gripper.xacro：TCP z=0.111，指尖约 z=0.147，差 0.036 m。
+  fingertip_from_tcp: 0.036
+  table_clearance: 0.015
+  cartesian_eef_step: 0.01
+  cartesian_fraction_min: 0.95
+  hold_seconds: 5.0
+  close_settle_seconds: 1.5
+  gripper_timeout_sec: 40.0
+  use_sim_attach: false
+
+gripper_touch_links:
+  - gripper_base_link
+  - rail_155
+  - slider_l
+  - slider_r
+  - finger_l
+  - finger_r
+  - gripper_gap_link

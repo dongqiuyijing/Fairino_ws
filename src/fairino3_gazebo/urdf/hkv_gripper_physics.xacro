@@ -1,0 +1,286 @@
+<?xml version="1.0"?>
+
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!--
+    Gazebo 物理夹爪 overlay。外观网格仍来自 fairino_description，
+    但不使用官方 hkv_gripper.xacro 里的 mimic。
+
+    原因：本工作空间的 gz_ros2_control 对 mimic 使用 JointPositionReset
+    传送从动指，会绕过接触约束并穿透零件。
+
+    本文件改为：
+    - rail_2_slider_l / rail_2_slider_r 两个独立棱柱关节
+    - 由有限 effort + PID 驱动
+    - 夹指 collision 用与网格 AABB 对齐的盒子，避免 STL 网格接触不可靠
+    - 保留 gripper_joint 仅供 MoveIt SRDF 兼容，不参与物理驱动
+  -->
+
+  <xacro:macro name="hkv_mesh" params="file">
+    <geometry>
+      <mesh
+          filename="package://fairino_description/meshes/hkv_gripper/${file}"
+          scale="0.001 0.001 0.001"/>
+    </geometry>
+  </xacro:macro>
+
+  <xacro:macro name="hkv_box_inertia" params="mass sx sy sz">
+    <inertia
+        ixx="${mass * (sy*sy + sz*sz) / 12.0}"
+        ixy="0"
+        ixz="0"
+        iyy="${mass * (sx*sx + sz*sz) / 12.0}"
+        iyz="0"
+        izz="${mass * (sx*sx + sy*sy) / 12.0}"/>
+  </xacro:macro>
+
+  <xacro:macro
+      name="hkv_gripper_physics"
+      params="parent mount_xyz:='0 0 0.100' mount_rpy:='0 0 0' gripper_closed_position:=0.1">
+
+    <xacro:property name="closed_pos" value="${float(gripper_closed_position)}"/>
+    <xacro:property name="half_travel" value="${closed_pos / 2.0}"/>
+
+    <material name="hkv_metal">
+      <color rgba="0.58 0.58 0.58 1"/>
+    </material>
+    <material name="hkv_silicone">
+      <color rgba="0.1882 0.1882 0.1882 1"/>
+    </material>
+
+
+    <link name="gripper_base_link">
+      <visual>
+        <origin xyz="0 0 0.0615" rpy="0 0 0"/>
+        <xacro:hkv_mesh file="base_body.stl"/>
+        <material name="hkv_silicone"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0.0615" rpy="0 0 0"/>
+        <xacro:hkv_mesh file="base_body.stl"/>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 0.037" rpy="0 0 0"/>
+        <mass value="0.45"/>
+        <xacro:hkv_box_inertia mass="0.45" sx="0.160" sy="0.071" sz="0.074"/>
+      </inertial>
+    </link>
+
+    <joint name="gripper_mount_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child link="gripper_base_link"/>
+      <origin xyz="${mount_xyz}" rpy="${mount_rpy}"/>
+    </joint>
+
+
+    <link name="rail_155">
+      <visual>
+        <origin xyz="0 0 0.067" rpy="0 0 0"/>
+        <xacro:hkv_mesh file="rail_155.stl"/>
+        <material name="hkv_metal"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0.067" rpy="0 0 0"/>
+        <xacro:hkv_mesh file="rail_155.stl"/>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 0.0694" rpy="0 0 0"/>
+        <mass value="0.04"/>
+        <xacro:hkv_box_inertia mass="0.04" sx="0.155" sy="0.007" sz="0.005"/>
+      </inertial>
+    </link>
+
+    <joint name="base_2_rail" type="fixed">
+      <parent link="gripper_base_link"/>
+      <child link="rail_155"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+
+
+    <link name="slider_r">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <xacro:hkv_mesh file="slider.stl"/>
+        <material name="hkv_metal"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0.00485" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.024 0.017 0.0065"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 0.00485" rpy="0 0 0"/>
+        <mass value="0.03"/>
+        <xacro:hkv_box_inertia mass="0.03" sx="0.024" sy="0.017" sz="0.0065"/>
+      </inertial>
+    </link>
+
+    <link name="slider_l">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <xacro:hkv_mesh file="slider.stl"/>
+        <material name="hkv_metal"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0.00485" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.024 0.017 0.0065"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0 0 0.00485" rpy="0 0 0"/>
+        <mass value="0.03"/>
+        <xacro:hkv_box_inertia mass="0.03" sx="0.024" sy="0.017" sz="0.0065"/>
+      </inertial>
+    </link>
+
+
+    <!--
+      finger.stl（缩放后）AABB：
+        x [-0.012, 0.0165]  y [-0.020, 0.020]  z [0, 0.0717]
+      盒子 origin 取中心 (0.00225, 0, 0.03585)，与 visual 对齐。
+      左指 rpy=0，右指绕 z 转 pi，内侧面都是指坐标系 +x。
+    -->
+    <link name="finger_r">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <xacro:hkv_mesh file="finger.stl"/>
+        <material name="hkv_silicone"/>
+      </visual>
+      <collision>
+        <origin xyz="0.00225 0 0.03585" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.0285 0.040 0.0717"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0.00225 0 0.03585" rpy="0 0 0"/>
+        <mass value="0.05"/>
+        <xacro:hkv_box_inertia mass="0.05" sx="0.0285" sy="0.040" sz="0.0717"/>
+      </inertial>
+    </link>
+
+    <link name="finger_l">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <xacro:hkv_mesh file="finger.stl"/>
+        <material name="hkv_silicone"/>
+      </visual>
+      <collision>
+        <origin xyz="0.00225 0 0.03585" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.0285 0.040 0.0717"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="0.00225 0 0.03585" rpy="0 0 0"/>
+        <mass value="0.05"/>
+        <xacro:hkv_box_inertia mass="0.05" sx="0.0285" sy="0.040" sz="0.0717"/>
+      </inertial>
+    </link>
+
+
+    <link name="gripper_gap_link">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.001"/>
+        <inertia
+            ixx="1e-8"
+            ixy="0"
+            ixz="0"
+            iyy="1e-8"
+            iyz="0"
+            izz="1e-8"/>
+      </inertial>
+    </link>
+
+    <!-- 仅保留给 MoveIt SRDF；不加入 ros2_control command，也不 mimic。 -->
+    <joint name="gripper_joint" type="prismatic">
+      <parent link="rail_155"/>
+      <child link="gripper_gap_link"/>
+      <origin xyz="0 0 0.067" rpy="0 0 0"/>
+      <axis xyz="1 0 0"/>
+      <limit
+          lower="0"
+          upper="${closed_pos}"
+          effort="1.0"
+          velocity="0.01"/>
+      <dynamics damping="50.0" friction="1.0"/>
+    </joint>
+
+    <joint name="rail_2_slider_l" type="prismatic">
+      <parent link="rail_155"/>
+      <child link="slider_l"/>
+      <origin xyz="-0.06545 0 0.067" rpy="0 0 0"/>
+      <axis xyz="1 0 0"/>
+      <limit
+          lower="0"
+          upper="${half_travel}"
+          effort="80.0"
+          velocity="0.2"/>
+      <dynamics damping="1.0" friction="0.05"/>
+    </joint>
+
+    <joint name="rail_2_slider_r" type="prismatic">
+      <parent link="rail_155"/>
+      <child link="slider_r"/>
+      <origin xyz="0.06545 0 0.067" rpy="0 0 0"/>
+      <axis xyz="1 0 0"/>
+      <limit
+          lower="-${half_travel}"
+          upper="0"
+          effort="80.0"
+          velocity="0.2"/>
+      <dynamics damping="1.0" friction="0.05"/>
+    </joint>
+
+    <joint name="slider_2_finger_r" type="fixed">
+      <parent link="slider_r"/>
+      <child link="finger_r"/>
+      <origin xyz="0 0 0.008" rpy="0 0 3.1415927"/>
+    </joint>
+
+    <joint name="slider_2_finger_l" type="fixed">
+      <parent link="slider_l"/>
+      <child link="finger_l"/>
+      <origin xyz="0 0 0.008" rpy="0 0 0"/>
+    </joint>
+
+
+    <link name="gripper_tcp"/>
+
+    <joint name="gripper_tcp_joint" type="fixed">
+      <parent link="gripper_base_link"/>
+      <child link="gripper_tcp"/>
+      <origin xyz="0 0 0.111" rpy="0 0 0"/>
+    </joint>
+
+
+    <gazebo reference="finger_l">
+      <mu1>1.2</mu1>
+      <mu2>1.2</mu2>
+      <kp>1e5</kp>
+      <kd>1.0</kd>
+      <minDepth>0.0005</minDepth>
+      <maxVel>0.1</maxVel>
+    </gazebo>
+    <gazebo reference="finger_r">
+      <mu1>1.2</mu1>
+      <mu2>1.2</mu2>
+      <kp>1e5</kp>
+      <kd>1.0</kd>
+      <minDepth>0.0005</minDepth>
+      <maxVel>0.1</maxVel>
+    </gazebo>
+    <gazebo reference="gripper_base_link">
+      <mu1>0.6</mu1>
+      <mu2>0.6</mu2>
+    </gazebo>
+    <gazebo reference="gripper_gap_link">
+      <gravity>false</gravity>
+    </gazebo>
+
+  </xacro:macro>
+
+</robot>

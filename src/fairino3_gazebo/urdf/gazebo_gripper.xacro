@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- 兼容旧 include：Gazebo 使用独立双指物理模型。 -->
+  <xacro:include
+      filename="$(find fairino3_gazebo)/urdf/hkv_gripper_physics.xacro"/>
+
+  <xacro:macro name="gazebo_gripper" params="parent">
+    <xacro:hkv_gripper_physics parent="${parent}"/>
+  </xacro:macro>
+
+</robot>

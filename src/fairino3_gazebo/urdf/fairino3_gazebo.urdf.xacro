@@ -1,0 +1,79 @@
+<?xml version="1.0"?>
+
+<robot
+    xmlns:xacro="http://www.ros.org/wiki/xacro"
+    name="fairino3_v6_robot">
+
+  <!-- 由 sim.launch.py 传入当前工作空间实际构建出的系统插件绝对路径。 -->
+  <xacro:arg name="gz_ros2_control_plugin" default="gz_ros2_control-system"/>
+  <!-- 阶段 4 大姿态翻面时开启。默认关闭，不影响阶段 3 纯物理抓取。 -->
+  <xacro:arg name="enable_grasp_weld" default="false"/>
+
+  <!-- FAIRINO 官方 FR3 -->
+  <xacro:include
+      filename="$(find fairino_description)/urdf/fairino3_v6.urdf"/>
+
+
+  <!-- 把机械臂底座固定到世界 -->
+  <link name="world"/>
+
+  <joint
+      name="world_to_base"
+      type="fixed">
+
+    <parent link="world"/>
+    <child link="base_link"/>
+
+    <origin
+        xyz="0 0 0"
+        rpy="0 0 0"/>
+
+  </joint>
+
+
+  <!-- Gazebo 物理夹爪：独立双指 + 盒子碰撞。不使用官方 mimic。 -->
+  <xacro:include
+      filename="$(find fairino3_gazebo)/urdf/hkv_gripper_physics.xacro"/>
+
+  <xacro:hkv_gripper_physics
+      parent="wrist3_link"/>
+
+
+  <!-- Gazebo ros2_control -->
+  <xacro:include
+      filename="$(find fairino3_gazebo)/urdf/gz_ros2_control.xacro"/>
+
+  <xacro:fr3_gz_ros2_control/>
+
+
+  <!-- gz_ros2_control Gazebo Plugin -->
+  <gazebo>
+
+    <plugin
+        filename="$(arg gz_ros2_control_plugin)"
+        name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+
+      <parameters>
+        $(find fairino3_gazebo)/config/controllers.yaml
+      </parameters>
+
+    </plugin>
+
+  </gazebo>
+
+  <xacro:if value="$(arg enable_grasp_weld)">
+    <gazebo>
+      <plugin
+          filename="ignition-gazebo-detachable-joint-system"
+          name="ignition::gazebo::systems::DetachableJoint">
+        <parent_link>gripper_base_link</parent_link>
+        <child_model>small_part</child_model>
+        <child_link>part_link</child_link>
+        <detach_topic>/fr3/grasp/detach</detach_topic>
+        <attach_topic>/fr3/grasp/attach</attach_topic>
+      </plugin>
+    </gazebo>
+  </xacro:if>
+
+
+</robot>

@@ -1,0 +1,146 @@
+<?xml version="1.0"?>
+
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="fr3_gz_ros2_control">
+
+    <ros2_control
+        name="GazeboSimSystem"
+        type="system">
+
+      <hardware>
+
+        <plugin>
+          gz_ros2_control/GazeboSimSystem
+        </plugin>
+
+      </hardware>
+
+
+      <joint name="j1">
+
+        <command_interface name="position"/>
+
+        <state_interface name="position">
+          <param name="initial_value">
+            2.4468
+          </param>
+        </state_interface>
+
+        <state_interface name="velocity"/>
+
+      </joint>
+
+
+      <joint name="j2">
+
+        <command_interface name="position"/>
+
+        <state_interface name="position">
+          <param name="initial_value">
+            -1.6214
+          </param>
+        </state_interface>
+
+        <state_interface name="velocity"/>
+
+      </joint>
+
+
+      <joint name="j3">
+
+        <command_interface name="position"/>
+
+        <state_interface name="position">
+          <param name="initial_value">
+            1.5465
+          </param>
+        </state_interface>
+
+        <state_interface name="velocity"/>
+
+      </joint>
+
+
+      <joint name="j4">
+
+        <command_interface name="position"/>
+
+        <state_interface name="position">
+          <param name="initial_value">
+            -1.5877
+          </param>
+        </state_interface>
+
+        <state_interface name="velocity"/>
+
+      </joint>
+
+
+      <joint name="j5">
+
+        <command_interface name="position"/>
+
+        <state_interface name="position">
+          <param name="initial_value">
+            -1.6368
+          </param>
+        </state_interface>
+
+        <state_interface name="velocity"/>
+
+      </joint>
+
+
+      <joint name="j6">
+
+        <command_interface name="position"/>
+
+        <state_interface name="position">
+          <param name="initial_value">
+            0.0
+          </param>
+        </state_interface>
+
+        <state_interface name="velocity"/>
+
+      </joint>
+
+
+      <!--
+        双指独立物理关节。effort 经 gz_ros2_control 写成 JointForceCmd，
+        由 DART 接触约束决定能否继续运动。不要再对夹指使用裸 position
+        command（会被转成 JointVelocityCmd），也不要 mimic JointPositionReset。
+        左指闭合沿 +x，右指闭合沿 -x。
+      -->
+      <joint name="rail_2_slider_l">
+        <command_interface name="effort"/>
+        <state_interface name="position">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <joint name="rail_2_slider_r">
+        <command_interface name="effort"/>
+        <state_interface name="position">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <!-- 仅 state，让 /joint_states 包含 gripper_joint，满足 MoveIt SRDF。 -->
+      <joint name="gripper_joint">
+        <state_interface name="position">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+
+    </ros2_control>
+
+  </xacro:macro>
+
+</robot>

@@ -1,0 +1,311 @@
+<?xml version="1.0" ?>
+
+<sdf version="1.8">
+
+  <!--
+    Gazebo 场景文件（SDF）。本文件只定义环境：地面、灯光、工作台和工件。
+    FR3 机械臂由 launch/sim.launch.py 在仿真启动后动态生成，不在此文件中。
+
+    坐标约定：
+    - 所有 pose 均按 "x y z roll pitch yaw" 排列；距离单位为米，角度单位为弧度。
+    - 世界原点 (0, 0, 0) 位于地面；当前机械臂底座也由启动文件生成在世界原点。
+    - x 通常可理解为机械臂前后方向，y 为左右方向，z 为竖直向上方向。
+  -->
+  <world name="default">
+
+    <!--
+      物理引擎设置。除非明确需要改变仿真精度或速度，否则建议保持不变。
+      本工程的 ros2_control 控制器更新频率为 100 Hz。
+    -->
+    <physics
+        name="physics"
+        type="ignored">
+
+      <!-- 控制器 100 Hz。10 ms 步长避免整机 STL 碰撞把实时因子打到接近 0。 -->
+      <max_step_size>
+        0.01
+      </max_step_size>
+
+      <real_time_factor>
+        <!--
+          目标实时倍率：1.0 表示尽量按真实时间运行；小于 1 表示允许慢于实时。
+          这只是目标，实际倍率仍受 CPU、显卡和碰撞计算负载影响。
+        -->
+        1.0
+      </real_time_factor>
+
+      <!-- FR3 使用 STL 碰撞网格。默认的 DART/FCL 网格碰撞会把实时因子
+           降到接近 0；使用已安装的 Bullet 碰撞检测器和 PGS 求解器，仍保留
+           重力、碰撞和关节动力学，同时可正常推进仿真时间。 -->
+      <dart>
+        <collision_detector>bullet</collision_detector>
+        <solver>
+          <solver_type>pgs</solver_type>
+        </solver>
+      </dart>
+
+    </physics>
+
+
+    <gravity>
+      <!-- 重力加速度 (x y z)，单位 m/s²；-9.81 表示沿世界 z 轴向下。 -->
+      0 0 -9.81
+    </gravity>
+
+    <!--
+      场景外观参数：ambient 是环境光 RGBA，background 是背景色 RGBA，范围均为 0~1。
+      它们只影响显示效果，不影响碰撞或物理行为。
+    -->
+    <scene>
+      <ambient>0.35 0.35 0.35 1</ambient>
+      <background>0.12 0.12 0.16 1</background>
+    </scene>
+
+
+    <light
+        type="directional"
+        name="sun">
+
+      <pose>
+        <!-- 光源位置与朝向；方向光的位置通常不重要，主要看下面的 direction。 -->
+        0 0 10 0 0 0
+      </pose>
+
+      <direction>
+        <!-- 光线传播方向。三个数字为方向向量，不是目标点坐标。 -->
+        -0.5 0.1 -0.9
+      </direction>
+
+    </light>
+
+
+    <!--
+      地面：static=true 表示它不会受重力或碰撞推动。
+      若需要更大可活动范围，增大 plane 的 size；例如 20 20 表示 20 × 20 m。
+    -->
+    <model name="ground">
+
+      <static>true</static>
+
+      <link name="link">
+
+        <collision name="collision">
+
+          <geometry>
+            <plane>
+              <!-- 法向量 0 0 1 使平面朝向 +z，即水平地面。 -->
+              <normal>
+                0 0 1
+              </normal>
+
+              <size>
+                <!-- 地面显示和碰撞的长度、宽度，单位：m。 -->
+                10 10
+              </size>
+            </plane>
+          </geometry>
+
+        </collision>
+
+
+        <visual name="visual">
+
+          <geometry>
+            <plane>
+
+              <normal>
+                0 0 1
+              </normal>
+
+              <size>
+                10 10
+              </size>
+
+            </plane>
+          </geometry>
+
+        </visual>
+
+      </link>
+
+    </model>
+
+
+    <!--
+      工作台：静态物体，会与机械臂和小零件发生碰撞，但不会被推动。
+      如需改变机械臂到桌子的距离，优先修改下面 model 的 pose：
+      - 改 x：让桌子向机械臂前方/后方移动；
+      - 改 y：让桌子向左/右移动；
+      - 改 z：改变桌面高度。改 z 后必须同步调整 small_part 的 z，避免工件悬空或嵌入桌面。
+      roll、pitch、yaw 分别用于绕 x、y、z 轴旋转桌子；一般保持 0。
+    -->
+    <model name="table">
+
+      <static>true</static>
+
+      <pose>
+        <!--
+          工作台中心的世界坐标。当前中心为 (0.5, 0, 0.05)。
+          桌面厚度为 0.05 m，因此桌面上表面高度 = 0.05 + 0.05 / 2 = 0.075 m。
+        -->
+        0.5 0 0.05 0 0 0
+      </pose>
+
+      <link name="table_link">
+
+        <collision name="collision">
+
+          <geometry>
+
+            <box>
+              <!-- 桌面盒子尺寸：x(前后长度) × y(左右宽度) × z(厚度)，单位：m。 -->
+              <size>
+                0.5 0.5 0.05
+              </size>
+            </box>
+
+          </geometry>
+
+        </collision>
+
+
+        <visual name="visual">
+
+          <geometry>
+
+            <box>
+              <size>
+                0.5 0.5 0.05
+              </size>
+            </box>
+
+          </geometry>
+
+          <!-- 高可见度粉色工作台面。 -->
+          <!--
+            颜色均为 RGBA，范围 0~1：ambient 是环境光下的颜色，diffuse 是直射光下的颜色，
+            emissive 为自发光成分，specular 控制高光。只想快速换色时，优先修改 diffuse。
+          -->
+          <material>
+            <ambient>0.60 0.08 0.35 1</ambient>
+            <diffuse>1.00 0.20 0.60 1</diffuse>
+            <emissive>0.16 0.02 0.08 1</emissive>
+            <specular>0.25 0.08 0.18 1</specular>
+          </material>
+
+        </visual>
+
+      </link>
+
+    </model>
+
+
+    <!--
+      阶段 3 测试零件 small_part。坐标系：Gazebo world（与 base_link 重合）。
+
+      真实目标约 5 × 20 × 5 mm，该尺寸对接触求解过小。阶段 3 先用
+      20 × 40 × 20 mm 验证抓取链路，确认后再缩小。
+
+      尺寸约定（米）：x=夹持宽度 0.020，y=沿桌面长度 0.040，z=高度 0.020。
+      static=false：受重力；有 collision / inertial，可与桌面和夹指接触。
+    -->
+    <model name="small_part">
+
+      <static>false</static>
+
+      <!--
+           桌面顶部 z = 0.075（桌子中心 0.05 + 厚度一半 0.025）。
+           零件半高 = 0.010，静止后中心 z = 0.085。
+           初始 z 略高 1 mm，避免生成时嵌入桌面。
+      -->
+
+      <pose>
+        <!-- 零件中心的世界坐标：x y z roll pitch yaw。 -->
+        0.5 0 0.086 0 0 0
+      </pose>
+
+
+      <link name="part_link">
+
+        <inertial>
+
+          <mass>
+            <!-- 质量单位：kg；0.03 即 30 g，便于接触仿真稳定。 -->
+            0.03
+          </mass>
+
+          <inertia>
+            <!-- 长方体 m*(b²+c²)/12，单位 kg·m²。 -->
+            <ixx>5.0e-6</ixx>
+            <iyy>2.0e-6</iyy>
+            <izz>5.0e-6</izz>
+
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+
+        </inertial>
+
+
+        <collision name="collision">
+
+          <geometry>
+
+            <box>
+              <!-- 20 × 40 × 20 mm。 -->
+              <size>
+                0.020 0.040 0.020
+              </size>
+            </box>
+
+          </geometry>
+
+          <surface>
+            <friction>
+              <ode>
+                <mu>1.5</mu>
+                <mu2>1.5</mu2>
+              </ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1e6</kp>
+                <kd>1.0</kd>
+                <min_depth>0.0005</min_depth>
+              </ode>
+            </contact>
+          </surface>
+
+        </collision>
+
+
+        <visual name="visual">
+
+          <geometry>
+
+            <box>
+              <size>
+                0.020 0.040 0.020
+              </size>
+            </box>
+
+          </geometry>
+
+          <material>
+            <ambient>0.80 0.55 0.05 1</ambient>
+            <diffuse>1.00 0.75 0.10 1</diffuse>
+            <emissive>0.18 0.10 0.00 1</emissive>
+            <specular>0.35 0.28 0.08 1</specular>
+          </material>
+
+        </visual>
+
+      </link>
+
+    </model>
+
+
+  </world>
+
+</sdf>
