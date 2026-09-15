@@ -32,12 +32,15 @@ setup(
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
+            'small_motion_test = fr_control.small_motion_test:main',
             "pose_sequence = fr_control.pose_sequence:main",
             "gripper_test = fr_control.gripper_test:main",
+            "gripper_motion_test = fr_control.gripper_motion_test:main",
             "gripper_contact_test = fr_control.gripper_contact_test:main",
             "collision_drop_test = fr_control.collision_drop_test:main",
             "grasp_test = fr_control.grasp_test:main",
             "stage4_inspection_test = fr_control.stage4_inspection_test:main",
+            "workcell_scene_loader = fr_control.workcell_scene_loader:main",
         ],
     },
 )

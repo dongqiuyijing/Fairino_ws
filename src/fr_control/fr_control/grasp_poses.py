@@ -44,6 +44,26 @@ def rpy_to_xyzw(roll: float, pitch: float, yaw: float) -> tuple[float, ...]:
     )
 
 
+def xyzw_to_rpy(
+    x: float, y: float, z: float, w: float
+) -> tuple[float, float, float]:
+    """Convert xyzw quaternion to ROS / URDF RPY (intrinsic ZYX)."""
+    xx = float(x)
+    yy = float(y)
+    zz = float(z)
+    ww = float(w)
+    sinr_cosp = 2.0 * (ww * xx + yy * zz)
+    cosr_cosp = 1.0 - 2.0 * (xx * xx + yy * yy)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+    sinp = 2.0 * (ww * yy - zz * xx)
+    sinp = max(-1.0, min(1.0, sinp))
+    pitch = math.asin(sinp)
+    siny_cosp = 2.0 * (ww * zz + xx * yy)
+    cosy_cosp = 1.0 - 2.0 * (yy * yy + zz * zz)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+    return roll, pitch, yaw
+
+
 def quat_xyzw(orientation: Quaternion) -> tuple[float, float, float, float]:
     """Return (x, y, z, w) from a Quaternion message."""
     return (

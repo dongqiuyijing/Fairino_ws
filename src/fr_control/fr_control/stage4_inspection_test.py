@@ -157,6 +157,10 @@ class Stage4InspectionNode(Node):
         check_unique_sim_graph(self)
         scene = PlanningSceneClient(self)
         scene.wait_until_ready()
+        self.get_logger().info(
+            "固定工作站障碍物（column/table）由 workcell_scene_loader 加载；"
+            "本节点只管理 object"
+        )
         gripper = create_gripper(
             self,
             backend=self._string_param("gripper_backend", "gazebo"),
@@ -172,7 +176,7 @@ class Stage4InspectionNode(Node):
         check_tcp_height(tcp.position.z)
 
         object_world = block_pose(object_cfg["initial_pose"])
-        table_world = block_pose(table_cfg["initial_pose"])
+
         object_name = str(object_cfg["name"])
         sim_grasp.detach()
         self._wait_sim(0.3)
@@ -192,12 +196,6 @@ class Stage4InspectionNode(Node):
             planning_frame,
             t_world_base,
         )
-        table_pose = self._to_planning_frame(
-            table_world,
-            str(table_cfg["initial_pose"].get("frame", "world")),
-            planning_frame,
-            t_world_base,
-        )
         poses = compute_grasp_poses(
             object_pose,
             approach_xyzw=grasp_tcp_xyzw(grasp_cfg),
@@ -209,7 +207,6 @@ class Stage4InspectionNode(Node):
             planning_frame=planning_frame,
         )
         object_size = list(as_vec3(object_cfg["dimensions"]))
-        table_size = list(as_vec3(table_cfg["dimensions"]))
         table_id = str(table_cfg["name"])
 
         self.get_logger().info(
@@ -223,9 +220,12 @@ class Stage4InspectionNode(Node):
         sim_grasp.detach()
         scene.detach(object_name, attach_link)
         scene.remove(object_name)
-        scene.remove(table_id)
-        scene.add_box(table_id, table_pose, table_size, planning_frame)
-        scene.add_box(object_name, object_pose, object_size, planning_frame)
+        scene.add_box(
+            object_name,
+            object_pose,
+            object_size,
+            planning_frame,
+        )
         scene.allow_collisions(object_name, touch_links, allowed=True)
         scene.allow_collisions(object_name, [table_id], allowed=True)
 

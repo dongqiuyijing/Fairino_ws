@@ -36,28 +36,70 @@ planning_frame: base_link
 attach_link: gripper_tcp
 
 robot:
-  # Gazebo spawn 位姿（world）。由 stage4_sim.launch.py 传给 ros_gz_sim create。
-  # MoveIt 规划在 base_link 下进行；非零底座时，程序用该变换把 world 零件位姿
-  # 转到 base_link，不依赖猜测的 world≡base_link。
+  # T_world_base：机器人基座安装位姿（robot base / mounting pose）。
+  #
+  # 仿真 Gazebo 的 world_to_base 固定关节、真机 static TF、
+  # MoveIt Planning Scene 回退变换，全部只读这一块。
+  #
+  # 改侧装角度、安装高度、底座在工作站中的位置：只改这里。
+  # 不要再改 real_installation.yaml。
+  #
+  # z=0.60 当前为临时实验值：world 地面 -> base_link 原点。
+  #
+  # orientation_xyzw 是真机已验证的侧装四元数：
+  #   R_world_base = Ry(90 deg) * Rz(-135 deg)
+  # 仿真启动时会把它转成 URDF RPY，不要在别处再写一份姿态。
   base_pose:
     frame: world
     position:
       x: 0.0
       y: 0.0
-      z: 0.0
+      z: 0.60
+
+    orientation_xyzw:
+      x: -0.6532814824381882
+      y: 0.2705980500730985
+      z: -0.6532814824381883
+      w: 0.2705980500730986
+
+  initial_joint_positions:
+    j1: 139.629 #2.4468
+    j2: -91.446 #-1.6214
+    j3: 95.946 #1.5465
+    j4: -95.318 #-1.5877
+    j5: -79.32 #-1.6368
+    j6: 136.408 #0.0
+
+column:
+  name: mounting_column
+
+  # FR3 为 90° 侧装：j1 轴（base_link +Z）沿 world +X。
+  # 立柱必须在安装面后方（world -X），不能和 base_link 原点重合。
+  # 若柱心仍在 (0, 0)，1 m 高的盒子会穿过 shoulder / j1，RViz 第一轴变红。
+  #
+  # SDF box 的 pose 在几何中心。
+  # x = -thickness/2 使柱子贴在 x=0 的安装面上，占据 x∈[-0.16, 0]。
+  initial_pose:
+    frame: world
+    position:
+      x: -0.08
+      y: 0.0
+      z: 0.50
     orientation_rpy:
       roll: 0.0
       pitch: 0.0
       yaw: 0.0
 
-  # 与 SRDF group_state pos1 / 阶段 3 grasp.yaml home 一致。
-  initial_joint_positions:
-    j1: 2.4468
-    j2: -1.6214
-    j3: 1.5465
-    j4: -1.5877
-    j5: -1.6368
-    j6: 0.0
+  dimensions:
+    x: 0.16
+    y: 0.16
+    # TEMP：柱子实际高度尚未测量
+    z: 1.00
+
+  # 立柱与底座是紧固件连接，PlanningScene 允许接触。
+  # 不要把 shoulder_link / j1 加进来，否则第一轴撞柱子不会变红。
+  touch_links:
+    - base_link
 
 table:
   name: table

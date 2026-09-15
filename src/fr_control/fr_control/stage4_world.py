@@ -17,23 +17,37 @@ from fr_control.inspection_poses import as_rpy, as_vec3
 
 def write_world_sdf(config: dict[str, Any], path: str | None = None) -> str:
     """Write a world SDF and return the absolute path."""
+    column = config["column"]
     table = config["table"]
     obj = config["object"]
+
+    column_pos = as_vec3(column["initial_pose"]["position"])
+    column_rpy = as_rpy(column["initial_pose"]["orientation_rpy"])
+    column_size = as_vec3(column["dimensions"])
+
     table_pos = as_vec3(table["initial_pose"]["position"])
     table_rpy = as_rpy(table["initial_pose"]["orientation_rpy"])
     table_size = as_vec3(table["dimensions"])
+
     obj_pos = as_vec3(obj["initial_pose"]["position"])
     obj_rpy = as_rpy(obj["initial_pose"]["orientation_rpy"])
     obj_size = as_vec3(obj["dimensions"])
+
     mass = float(obj.get("mass", 0.03))
     inertia = _box_inertia(mass, obj_size)
     sdf = _WORLD_TEMPLATE.format(
+        column_name=_xml_name(column.get("name", "mounting_column")),
+        column_pose=_pose_txt(column_pos, column_rpy),
+        column_size=_vec_txt(column_size),
+
         table_name=_xml_name(table.get("name", "table")),
         table_pose=_pose_txt(table_pos, table_rpy),
         table_size=_vec_txt(table_size),
+
         object_name=_xml_name(obj.get("name", "small_part")),
         object_pose=_pose_txt(obj_pos, obj_rpy),
         object_size=_vec_txt(obj_size),
+
         object_mass=f"{mass:.6g}",
         ixx=f"{inertia[0]:.8e}",
         iyy=f"{inertia[1]:.8e}",
@@ -138,6 +152,38 @@ _WORLD_TEMPLATE = """<?xml version="1.0" ?>
             </plane>
           </geometry>
         </visual>
+      </link>
+    </model>
+        <model name="{column_name}">
+      <static>true</static>
+
+      <pose>{column_pose}</pose>
+
+      <link name="column_link">
+
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>{column_size}</size>
+            </box>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>{column_size}</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>0.35 0.35 0.35 1</ambient>
+            <diffuse>0.55 0.55 0.55 1</diffuse>
+            <specular>0.20 0.20 0.20 1</specular>
+          </material>
+
+        </visual>
+
       </link>
     </model>
     <model name="{table_name}">

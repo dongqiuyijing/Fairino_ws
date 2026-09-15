@@ -7,13 +7,16 @@ the single source of experiment numbers.
 
 from __future__ import annotations
 
-from typing import Any
+import os
+from typing import Any, Sequence
 
 import yaml
-from geometry_msgs.msg import Pose
+from ament_index_python.packages import get_package_share_directory
+from geometry_msgs.msg import Pose, Quaternion
 
 from fr_control.constants import ARM_JOINTS
 from fr_control.gazebo_world_pose import pose_from_rpy
+from fr_control.grasp_poses import xyzw_to_rpy
 from fr_control.inspection_poses import (
     InspectionError,
     as_rpy,
@@ -21,6 +24,15 @@ from fr_control.inspection_poses import (
     check_not_collinear,
     frame_from_z_and_x,
 )
+
+
+def workcell_config_path() -> str:
+    """Return the shared sim/real workcell YAML path."""
+    return os.path.join(
+        get_package_share_directory("fr_control"),
+        "config",
+        "stage4_config.yaml",
+    )
 
 
 def load_yaml(path: str) -> dict[str, Any]:
@@ -49,9 +61,56 @@ def block_pose(block: dict[str, Any]) -> Pose:
     )
 
 
+def as_xyzw(value: Sequence[float] | dict[str, Any]) -> tuple[float, float, float, float]:
+    """Read an xyzw quaternion from a list or {x,y,z,w} mapping."""
+    if isinstance(value, dict):
+        missing = [key for key in ("x", "y", "z", "w") if key not in value]
+        if missing:
+            raise InspectionError(f"orientation_xyzw 缺少：{missing}")
+        return (
+            float(value["x"]),
+            float(value["y"]),
+            float(value["z"]),
+            float(value["w"]),
+        )
+    if len(value) != 4:
+        raise InspectionError("orientation_xyzw 需要 4 个数")
+    return (float(value[0]), float(value[1]), float(value[2]), float(value[3]))
+
+
+def robot_base_xyz(config: dict[str, Any]) -> tuple[float, float, float]:
+    """Return T_world_base translation from the shared workcell YAML."""
+    return as_vec3(config["robot"]["base_pose"]["position"])
+
+
+def robot_base_xyzw(
+    config: dict[str, Any],
+) -> tuple[float, float, float, float]:
+    """Return the canonical T_world_base quaternion from YAML."""
+    block = config["robot"]["base_pose"]
+    if "orientation_xyzw" not in block:
+        raise InspectionError(
+            "robot.base_pose 需要 orientation_xyzw。"
+            "仿真和真机都只读这一处安装姿态。"
+        )
+    return as_xyzw(block["orientation_xyzw"])
+
+
+def robot_base_rpy(config: dict[str, Any]) -> tuple[float, float, float]:
+    """Return T_world_base as URDF RPY, derived from orientation_xyzw."""
+    return xyzw_to_rpy(*robot_base_xyzw(config))
+
+
 def robot_base_pose(config: dict[str, Any]) -> Pose:
     """Return T_world_base from YAML."""
-    return block_pose(config["robot"]["base_pose"])
+    x, y, z = robot_base_xyz(config)
+    qx, qy, qz, qw = robot_base_xyzw(config)
+    pose = Pose()
+    pose.position.x = x
+    pose.position.y = y
+    pose.position.z = z
+    pose.orientation = Quaternion(x=qx, y=qy, z=qz, w=qw)
+    return pose
 
 
 def grasp_tcp_xyzw(grasp_cfg: dict[str, Any]) -> tuple[float, float, float, float]:

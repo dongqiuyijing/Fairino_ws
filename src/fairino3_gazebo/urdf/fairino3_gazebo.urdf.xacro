@@ -8,6 +8,13 @@
   <xacro:arg name="gz_ros2_control_plugin" default="gz_ros2_control-system"/>
   <!-- 阶段 4 大姿态翻面时开启。默认关闭，不影响阶段 3 纯物理抓取。 -->
   <xacro:arg name="enable_grasp_weld" default="false"/>
+  <!-- world → base_link。Stage 1–3 为 0；Stage 4 由 YAML 安装位姿传入。 -->
+  <xacro:arg name="world_to_base_x" default="0"/>
+  <xacro:arg name="world_to_base_y" default="0"/>
+  <xacro:arg name="world_to_base_z" default="0"/>
+  <xacro:arg name="world_to_base_roll" default="0"/>
+  <xacro:arg name="world_to_base_pitch" default="0"/>
+  <xacro:arg name="world_to_base_yaw" default="0"/>
 
   <!-- FAIRINO 官方 FR3 -->
   <xacro:include
@@ -25,8 +32,8 @@
     <child link="base_link"/>
 
     <origin
-        xyz="0 0 0"
-        rpy="0 0 0"/>
+        xyz="$(arg world_to_base_x) $(arg world_to_base_y) $(arg world_to_base_z)"
+        rpy="$(arg world_to_base_roll) $(arg world_to_base_pitch) $(arg world_to_base_yaw)"/>
 
   </joint>
 
@@ -36,7 +43,8 @@
       filename="$(find fairino3_gazebo)/urdf/hkv_gripper_physics.xacro"/>
 
   <xacro:hkv_gripper_physics
-      parent="wrist3_link"/>
+      parent="wrist3_link"
+      mount_rpy="0 0 ${pi/4}"/>
 
 
   <!-- Gazebo ros2_control -->

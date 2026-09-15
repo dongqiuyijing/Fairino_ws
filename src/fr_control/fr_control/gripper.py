@@ -8,15 +8,18 @@ moving from Gazebo to a real FAIRINO gripper; do not change pick logic.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import os
 import time
-from typing import Sequence
+from typing import Any, Sequence
 
+from ament_index_python.packages import get_package_share_directory
 from control_msgs.action import GripperCommand
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.task import Future
 from sensor_msgs.msg import JointState
+import yaml
 
 from fr_control.constants import (
     GRIPPER_CLOSED,
@@ -26,6 +29,16 @@ from fr_control.constants import (
     GRIPPER_RIGHT_ACTION,
     GRIPPER_RIGHT_JOINT,
 )
+from fairino_msgs.srv import GripperBridge
+
+_GAZEBO_KWARGS = {
+    "left_action",
+    "right_action",
+    "open_position",
+    "closed_position",
+    "max_effort",
+    "wait_timeout_sec",
+}
 
 
 class GripperError(RuntimeError):
@@ -34,6 +47,25 @@ class GripperError(RuntimeError):
 
 class GripperInterface(ABC):
     """Task-layer gripper API. Backends implement this, tasks do not."""
+
+    def activate(self, timeout_sec: float = 5.0) -> None:
+        """Activate the gripper. Default is a no-op for simulation."""
+        del timeout_sec
+
+    def reset(self, timeout_sec: float = 5.0) -> None:
+        """Explicit reset. Default is a no-op; never call this from create()."""
+        del timeout_sec
+
+    def check_connection(self) -> None:
+        """Verify the backend is reachable without commanding motion."""
+
+    def describe(self) -> dict[str, Any]:
+        """Return a JSON-serialisable summary of this backend."""
+        return {"backend": type(self).__name__}
+
+    def get_state(self) -> dict[str, Any]:
+        """Optional feedback. Current is not clamp force in newtons."""
+        return {}
 
     @abstractmethod
     def open(self, timeout_sec: float = 5.0) -> None:
@@ -128,6 +160,25 @@ class GazeboGripper(GripperInterface):
             JointState, "/joint_states", self._on_joint_state, 10
         )
 
+    def describe(self) -> dict[str, Any]:
+        """Return Gazebo close-travel parameters."""
+        return {
+            "backend": "gazebo",
+            "open_position": self._open_position,
+            "closed_position": self._closed_position,
+            "conservative_position": 0.5
+            * (self._open_position + self._closed_position),
+            "left_action": self._left.name,
+            "right_action": self._right.name,
+        }
+
+    def check_connection(self) -> None:
+        """Action servers were already required during construction."""
+        self._node.get_logger().info(
+            "Gazebo 夹爪 action 已就绪："
+            f"{self._left.name} {self._right.name}"
+        )
+
     def open(self, timeout_sec: float = 5.0) -> None:
         """Fully open the gripper."""
         self.move(self._open_position, timeout_sec=timeout_sec)
@@ -136,7 +187,12 @@ class GazeboGripper(GripperInterface):
         """Fully close the gripper."""
         self.move(self._closed_position, timeout_sec=timeout_sec)
 
-    def move(self, position: float, timeout_sec: float = 5.0) -> None:
+    def move(
+        self,
+        position: float,
+        timeout_sec: float = 5.0,
+        **_unused,
+    ) -> None:
         """Command both fingers to a symmetric close-travel position."""
         travel = min(
             self._closed_position,
@@ -252,34 +308,266 @@ class GazeboGripper(GripperInterface):
 
 class RealFairinoGripper(GripperInterface):
     """
-    Placeholder for the real FAIRINO gripper (Lua / RS485).
+    Real HKV TG-9801 via FAIRINO controller Lua, not via FR3 joints.
 
-    Stage 2 only implements GazeboGripper. Keep this class so later
-    hardware code can drop in without changing task nodes.
+    Commands go through /fairino_gripper/command, which FairinoHardwareInterface
+    executes on the same FRRobot already used by ServoJ. This object never
+    opens XML-RPC 20003 and does not start ros2_cmd_server. Creating it does
+    not reset, activate, or move the gripper.
     """
 
-    def __init__(self, node: Node, **_kwargs) -> None:
-        """Record the node; methods raise until the real driver exists."""
+    def __init__(
+        self,
+        node: Node,
+        *,
+        dry_run: bool = False,
+        config_file: str = "",
+        **overrides: Any,
+    ) -> None:
+        """Load YAML parameters. Does not call the hardware service yet."""
         self._node = node
+        self._dry_run = bool(dry_run)
+        cfg = load_real_gripper_config(node, config_file)
+        allowed = set(cfg.keys())
+        cfg.update(
+            {
+                key: value
+                for key, value in overrides.items()
+                if key in allowed and value is not None
+            }
+        )
+        self._cfg = cfg
+        self._client = node.create_client(
+            GripperBridge, str(cfg["service_name"])
+        )
+        node.get_logger().info(
+            "RealFairinoGripper 已创建（尚未发令，不会自动 reset/activate/运动）"
+            f" id={cfg['id']} service={cfg['service_name']}"
+            f" open={cfg['open_position']} close={cfg['close_position']}"
+            f" vel={cfg['velocity']} force={cfg['force']}"
+            f" dry_run={self._dry_run}"
+        )
+
+    def describe(self) -> dict[str, Any]:
+        """Return the loaded real-gripper parameters."""
+        data = dict(self._cfg)
+        data["backend"] = "real"
+        data["dry_run"] = self._dry_run
+        data["service_name"] = self._cfg["service_name"]
+        data["auto_reset"] = False
+        data["rpc_direct"] = False
+        return data
+
+    def check_connection(self) -> None:
+        """Wait for the hardware gripper service and ping it. Does not Act/Move."""
+        name = str(self._cfg["service_name"])
+        timeout = float(self._cfg["service_timeout_sec"])
+        self._node.get_logger().info(
+            f"等待夹爪桥接服务 {name}（ping，不发送 Act/Move）"
+        )
+        if not self._client.wait_for_service(timeout_sec=timeout):
+            raise GripperError(
+                f"未找到夹爪服务 {name}。请重启已加载夹爪桥接的 real_bringup，"
+                "不要另开 XML-RPC 20003。"
+            )
+        result = self._call("ping")
+        self._node.get_logger().info(
+            f"夹爪桥接探测成功：{result.message} code={result.error_code}"
+        )
+
+    def activate(self, timeout_sec: float = 5.0) -> None:
+        """Explicit ActGripper(id, 1). Not called from create_gripper()."""
+        self._act("activate", timeout_sec)
+
+    def reset(self, timeout_sec: float = 5.0) -> None:
+        """Explicit ActGripper(id, 0). Never run automatically."""
+        self._act("reset", timeout_sec)
 
     def open(self, timeout_sec: float = 5.0) -> None:
-        """Not implemented for real hardware yet."""
-        raise NotImplementedError(self._message())
+        """Move to the configured open position."""
+        self.move(int(self._cfg["open_position"]), timeout_sec=timeout_sec)
 
     def close(self, timeout_sec: float = 5.0) -> None:
-        """Not implemented for real hardware yet."""
-        raise NotImplementedError(self._message())
+        """Move to the configured close position."""
+        self.move(int(self._cfg["close_position"]), timeout_sec=timeout_sec)
 
-    def move(self, position: float, timeout_sec: float = 5.0) -> None:
-        """Not implemented for real hardware yet."""
-        raise NotImplementedError(self._message())
-
-    def _message(self) -> str:
-        """Explain that only the Gazebo backend exists in stage 2."""
-        return (
-            "RealFairinoGripper 尚未实现。"
-            "阶段 2 请使用 create_gripper(node, backend='gazebo')。"
+    def move(
+        self,
+        position: float,
+        timeout_sec: float = 5.0,
+        velocity: int | None = None,
+        force: int | None = None,
+        **_unused,
+    ) -> None:
+        """MoveGripper to a 0-100 position using YAML vel/force."""
+        pos = int(round(float(position)))
+        command = {
+            "method": "MoveGripper",
+            "service": str(self._cfg["service_name"]),
+            "id": int(self._cfg["id"]),
+            "pos": pos,
+            "vel": int(self._cfg["velocity"] if velocity is None else velocity),
+            "force": int(self._cfg["force"] if force is None else force),
+            "max_time_ms": int(self._cfg["max_time_ms"]),
+            "block": int(self._cfg["block"]),
+            "type": int(self._cfg["type"]),
+            "rot_num": float(self._cfg["rot_num"]),
+            "rot_vel": int(self._cfg["rot_vel"]),
+            "rot_torque": int(self._cfg["rot_torque"]),
+        }
+        if self._dry_run:
+            self._node.get_logger().info(f"dry_run 跳过运动：{command}")
+            return
+        self._node.get_logger().info(f"发送 {command}")
+        result = self._call(
+            "move",
+            position=command["pos"],
+            velocity=command["vel"],
+            force=command["force"],
+            max_time_ms=command["max_time_ms"],
+            block=command["block"],
+            gripper_type=command["type"],
+            rot_num=command["rot_num"],
+            rot_vel=command["rot_vel"],
+            rot_torque=command["rot_torque"],
         )
+        self._node.get_logger().info(
+            f"MoveGripper 返回码={result.error_code} {result.message}"
+        )
+        self._wait_motion(timeout_sec)
+
+    def get_state(self) -> dict[str, Any]:
+        """Service reachability only. Do not poll GetGripperMotionDone on 20003."""
+        try:
+            result = self._call("ping")
+        except GripperError as exc:
+            self._node.get_logger().warn(f"get_state 不可用：{exc}")
+            return {"error": str(exc)}
+        return {
+            "service": str(self._cfg["service_name"]),
+            "ping_code": result.error_code,
+            "message": result.message,
+            "note": "fault/current 百分比不是夹持力 N；不在 20003 上轮询 motion done",
+        }
+
+    def _act(self, name: str, timeout_sec: float) -> None:
+        """Send ActGripper via the hardware bridge. name is activate or reset."""
+        command = {
+            "method": "ActGripper",
+            "service": str(self._cfg["service_name"]),
+            "id": int(self._cfg["id"]),
+            "name": name,
+        }
+        if self._dry_run:
+            self._node.get_logger().info(f"dry_run 跳过 {name}：{command}")
+            return
+        self._node.get_logger().info(f"发送 {command}")
+        result = self._call(name)
+        self._node.get_logger().info(
+            f"ActGripper({name}) 返回码={result.error_code} {result.message}"
+        )
+        if timeout_sec > 0.0:
+            time.sleep(min(timeout_sec, 2.0))
+
+    def _wait_motion(self, timeout_sec: float) -> None:
+        """Hardware service already waited for GetGripperMotionDone and ServoJ resume."""
+        del timeout_sec
+        self._node.get_logger().info(
+            "夹爪服务已返回：硬件确认动作完成且 ServoJ 已恢复"
+        )
+
+    def _call(self, command: str, **fields: Any) -> GripperBridge.Response:
+        """Send one gripper command through the hardware-interface service."""
+        timeout = max(
+            float(self._cfg["service_timeout_sec"]),
+            float(fields.get("max_time_ms", self._cfg["max_time_ms"])) / 1000.0
+            + 5.0,
+        )
+        if not self._client.wait_for_service(timeout_sec=timeout):
+            raise GripperError(
+                f"未找到夹爪服务 {self._cfg['service_name']}。"
+                "请重启已加载夹爪桥接的 real_bringup。"
+            )
+        request = GripperBridge.Request()
+        request.command = str(command)
+        request.gripper_id = int(self._cfg["id"])
+        request.position = int(fields.get("position", 0))
+        request.velocity = int(fields.get("velocity", self._cfg["velocity"]))
+        request.force = int(fields.get("force", self._cfg["force"]))
+        request.max_time_ms = int(
+            fields.get("max_time_ms", self._cfg["max_time_ms"])
+        )
+        request.block = int(fields.get("block", self._cfg["block"]))
+        request.gripper_type = int(fields.get("gripper_type", self._cfg["type"]))
+        request.rot_num = float(fields.get("rot_num", self._cfg["rot_num"]))
+        request.rot_vel = int(fields.get("rot_vel", self._cfg["rot_vel"]))
+        request.rot_torque = int(
+            fields.get("rot_torque", self._cfg["rot_torque"])
+        )
+        future = self._client.call_async(request)
+        rclpy.spin_until_future_complete(
+            self._node, future, timeout_sec=timeout
+        )
+        if not future.done():
+            raise GripperError(
+                f"夹爪服务调用超时：{command} {self._cfg['service_name']}"
+            )
+        result = future.result()
+        if result is None:
+            raise GripperError(f"夹爪服务无响应：{command}")
+        if int(result.error_code) != 0:
+            raise GripperError(
+                f"{command} 失败，返回码={result.error_code} {result.message}"
+            )
+        return result
+
+
+def load_real_gripper_config(node: Node, config_file: str = "") -> dict[str, Any]:
+    """Load gripper.yaml. ROS param gripper_config_file can override the path."""
+    path = str(config_file or "").strip()
+    if not path:
+        path = _node_string_param(node, "gripper_config_file", "")
+    if not path:
+        path = os.path.join(
+            get_package_share_directory("fr_control"),
+            "config",
+            "gripper.yaml",
+        )
+    with open(path, encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle) or {}
+    block = raw.get("gripper", raw)
+    real = dict(block.get("real", {}))
+    cfg = {
+        "id": int(block.get("id", 1)),
+        "controller_ip": str(real.get("controller_ip", "192.168.58.2")),
+        "service_name": str(
+            real.get("service_name", "/fairino_gripper/command")
+        ),
+        "service_timeout_sec": float(real.get("service_timeout_sec", 15.0)),
+        "open_position": int(real.get("open_position", 0)),
+        "close_position": int(real.get("close_position", 80)),
+        "velocity": int(real.get("velocity", 20)),
+        "force": int(real.get("force", 20)),
+        "conservative_position": int(real.get("conservative_position", 20)),
+        "conservative_velocity": int(real.get("conservative_velocity", 10)),
+        "conservative_force": int(real.get("conservative_force", 15)),
+        "max_time_ms": int(real.get("max_time_ms", 5000)),
+        "block": int(real.get("block", 1)),
+        "type": int(real.get("type", 0)),
+        "rot_num": float(real.get("rot_num", 0.0)),
+        "rot_vel": int(real.get("rot_vel", 0)),
+        "rot_torque": int(real.get("rot_torque", 0)),
+        "config_file": path,
+    }
+    node.get_logger().info(f"已加载夹爪配置：{path}")
+    return cfg
+
+
+def _node_string_param(node: Node, name: str, default: str) -> str:
+    """Read a string ROS parameter if the node already declared it."""
+    if not node.has_parameter(name):
+        return default
+    return str(node.get_parameter(name).get_parameter_value().string_value)
 
 
 def create_gripper(
@@ -289,10 +577,25 @@ def create_gripper(
 ) -> GripperInterface:
     """Build a gripper backend. Task nodes should call this factory."""
     name = str(backend).strip().lower()
+    dry_run = bool(kwargs.pop("dry_run", False))
+    config_file = str(kwargs.pop("config_file", "") or "")
     if name in ("gazebo", "sim", "simulation"):
-        return GazeboGripper(node, **kwargs)
+        gazebo_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key in _GAZEBO_KWARGS
+        }
+        gripper = GazeboGripper(node, **gazebo_kwargs)
+        if dry_run:
+            node.get_logger().info("gazebo backend 已创建；dry_run 由调用方跳过运动")
+        return gripper
     if name in ("real", "fairino", "hardware"):
-        return RealFairinoGripper(node, **kwargs)
+        return RealFairinoGripper(
+            node,
+            dry_run=dry_run,
+            config_file=config_file,
+            **kwargs,
+        )
     raise ValueError(
         f"未知夹爪 backend：{backend}。可选 gazebo 或 real"
     )

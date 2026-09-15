@@ -1,0 +1,49 @@
+# 真实 HKV TG-9801 夹爪参数（唯一权威源）。
+# Stage 2 / 3 / 4 不要在任务代码里再写一份 open/close 数值。
+#
+# 位置映射来自已经在本机跑过的：
+#   fr_control/test/demo_show_test.py
+#     MoveGripper(id=1, pos=0,  vel=20, force=20, ...)
+#     MoveGripper(id=1, pos=80, vel=20, force=20, ...)
+# 不要按通用手册自行假设 0=全闭、100=全开。
+#
+# 通信：
+#   不使用 fairino.Robot.RPC()（会额外占用 CNDE 20005 / UDP 20007）
+#   不启动 ros2_cmd_server
+#   不另开 XML-RPC 20003（FairinoHardwareInterface 的 ServoJ 已经占用）
+#   真机夹爪走 /fairino_gripper/command，由硬件接口在同一条 FRRobot 上串行调用
+#
+# 改过 fairino_hardware_v3_9_7 之后必须重启 real_bringup，否则服务不存在。
+
+gripper:
+  id: 1
+
+  real:
+    controller_ip: "192.168.58.2"
+    service_name: "/fairino_gripper/command"
+    # 必须大于 MoveGripper max_time + Servo 停止/恢复余量。
+    # 硬件接口会等到 GetGripperMotionDone 完成且 ServoJ 恢复后才返回。
+    service_timeout_sec: 15.0
+
+    open_position: 0
+    close_position: 80
+
+    velocity: 20
+    force: 20
+
+    # 第一次真机运动用：小行程、低速度、低/中力矩。不是全力夹紧。
+    conservative_position: 20
+    conservative_velocity: 10
+    conservative_force: 15
+
+    max_time_ms: 5000
+
+    # 0=阻塞，1=非阻塞。真机与 ServoJ 共用 20003 时必须非阻塞，
+    # 避免 MoveGripper 卡住 FairinoHardwareInterface 的 XML-RPC。
+    # demo_show_test.py 当时用的是 0；那次没有与 ServoJ 并发。
+    block: 1
+
+    type: 0
+    rot_num: 0.0
+    rot_vel: 0
+    rot_torque: 0
