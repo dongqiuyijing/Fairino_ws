@@ -21,6 +21,8 @@ from launch.actions import (
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
+from fr_control.stage4_config import load_yaml, robot_base_rpy, robot_base_xyz
+
 
 def _delayed_moveit(context, *args, **kwargs):
     """Start move_group and optional RViz after Gazebo controllers exist."""
@@ -30,6 +32,9 @@ def _delayed_moveit(context, *args, **kwargs):
         "1",
         "yes",
     )
+    config = load_yaml(LaunchConfiguration("config_file").perform(context))
+    position = robot_base_xyz(config)
+    rpy = robot_base_rpy(config)
     gazebo_share = get_package_share_directory("fairino3_gazebo")
     moveit_share = get_package_share_directory("fairino3_v6_moveit2_config")
     delayed = [
@@ -42,6 +47,13 @@ def _delayed_moveit(context, *args, **kwargs):
             ),
             launch_arguments={
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
+                "enable_grasp_weld": "false",
+                "world_to_base_x": f"{position[0]:.8g}",
+                "world_to_base_y": f"{position[1]:.8g}",
+                "world_to_base_z": f"{position[2]:.8g}",
+                "world_to_base_roll": f"{rpy[0]:.8g}",
+                "world_to_base_pitch": f"{rpy[1]:.8g}",
+                "world_to_base_yaw": f"{rpy[2]:.8g}",
             }.items(),
         ),
     ]

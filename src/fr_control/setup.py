@@ -40,6 +40,8 @@ setup(
             "collision_drop_test = fr_control.collision_drop_test:main",
             "grasp_test = fr_control.grasp_test:main",
             "stage4_inspection_test = fr_control.stage4_inspection_test:main",
+            "stage4_real_grasp_test = fr_control.stage4_real_grasp_test:main",
+            "stage4_sim_grasp_test = fr_control.stage4_sim_grasp_test:main",
             "workcell_scene_loader = fr_control.workcell_scene_loader:main",
         ],
     },

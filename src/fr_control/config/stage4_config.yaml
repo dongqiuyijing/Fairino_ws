@@ -144,6 +144,11 @@ grasp:
   # 当前与阶段 3 approach_rpy=(pi, 0, 0) 等价：俯抓，夹持零件 20 mm 宽度。
   pregrasp_distance: 0.08
   lift_distance: 0.08
+  # 真机专用；Stage4 仿真继续读上面的 lift_distance / fingertip_from_tcp。
+  real_lift_distance: 0.05
+  real_fingertip_from_tcp: 0.0
+  # 仅 stage4_sim_grasp_test 读取；原 Stage4 inspection 仍用 lift_distance。
+  sim_test_lift_distance: 0.05
   approach_direction:
     x: 0.0
     y: 0.0
@@ -153,7 +158,8 @@ grasp:
     y: 0.0
     z: 0.0
   table_top_z: 0.750
-  fingertip_from_tcp: 0.036
+  # 仿真 TCP 已与真机对齐（法兰→gripper_tcp = 0.150 m，指尖中心）。
+  fingertip_from_tcp: 0.0
   table_clearance: 0.015
   cartesian_eef_step: 0.01
   cartesian_fraction_min: 0.95
@@ -213,6 +219,10 @@ inspection:
 motion:
   velocity_scaling: 0.2
   acceleration_scaling: 0.2
+  # 真机固定抓取三段速度；Stage4 仿真继续只用上面的 velocity_scaling。
+  transit_velocity_scaling: 0.30
+  approach_velocity_scaling: 0.10
+  lift_velocity_scaling: 0.30
   planning_time: 10.0
   planning_attempts: 16
   position_tolerance: 0.005

@@ -248,12 +248,17 @@
     </joint>
 
 
+    <!--
+      与真机 hkv_gripper.xacro 对齐：
+      gripper_tcp = 两指最末端中心，法兰 → TCP = 0.150 m。
+      不再放在工作区中部（旧值 0.111），也不再做 0.036 指尖补偿。
+    -->
     <link name="gripper_tcp"/>
 
     <joint name="gripper_tcp_joint" type="fixed">
       <parent link="gripper_base_link"/>
       <child link="gripper_tcp"/>
-      <origin xyz="0 0 0.111" rpy="0 0 0"/>
+      <origin xyz="0 0 0.150" rpy="0 0 0"/>
     </joint>
 
 

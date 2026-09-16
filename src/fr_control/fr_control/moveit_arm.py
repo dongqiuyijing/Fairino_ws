@@ -117,6 +117,10 @@ class MoveItArm:
             )
         self._node.get_logger().info("MoveIt move_group 已就绪")
 
+    def set_velocity_scale(self, velocity_scale: float) -> None:
+        """Update max velocity scaling for later Plan / Cartesian timing."""
+        self._velocity_scale = float(velocity_scale)
+
     def plan_joints(self, positions: Sequence[float]) -> RobotTrajectory:
         """Plan to a joint target without executing."""
         if len(positions) != len(self._joint_names):

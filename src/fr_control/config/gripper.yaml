@@ -26,7 +26,7 @@ gripper:
     service_timeout_sec: 15.0
 
     open_position: 0
-    close_position: 80
+    close_position: 85
 
     velocity: 20
     force: 20
