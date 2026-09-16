@@ -52,9 +52,9 @@ robot:
   base_pose:
     frame: world
     position:
-      x: 0.0
+      x: 0.10
       y: 0.0
-      z: 0.60
+      z: 1.20
 
     orientation_xyzw:
       x: -0.6532814824381882
@@ -82,19 +82,19 @@ column:
   initial_pose:
     frame: world
     position:
-      x: -0.08
+      x: 0
       y: 0.0
-      z: 0.50
+      z: 0.7
     orientation_rpy:
       roll: 0.0
       pitch: 0.0
       yaw: 0.0
 
   dimensions:
-    x: 0.16
-    y: 0.16
+    x: 0.2
+    y: 0.2
     # TEMP：柱子实际高度尚未测量
-    z: 1.00
+    z: 1.4
 
   # 立柱与底座是紧固件连接，PlanningScene 允许接触。
   # 不要把 shoulder_link / j1 加进来，否则第一轴撞柱子不会变红。
@@ -106,17 +106,17 @@ table:
   initial_pose:
     frame: world
     position:
-      x: 0.5
-      y: 0.0
-      z: 0.05
+      x: 0.0
+      y: 0.8
+      z: 0.735
     orientation_rpy:
       roll: 0.0
       pitch: 0.0
       yaw: 0.0
   dimensions:
-    x: 0.5
-    y: 0.5
-    z: 0.05
+    x: 1
+    y: 1
+    z: 0.03
 
 object:
   name: small_part
@@ -124,18 +124,20 @@ object:
   initial_pose:
     frame: world
     position:
-      x: 0.5
-      y: 0.0
-      z: 0.086
+      x: 0.0
+      y: 0.15
+      z: 0.7675
     orientation_rpy:
       roll: 0.0
       pitch: 0.0
       yaw: 0.0
-  # x=夹持宽度, y=长度, z=高度。stage4_sim.launch.py 用这些数字生成 SDF。
+  # 圆柱形零件
+  # 直径 = 15 mm
+  # 高度 = 35 mm
+  shape: cylinder
   dimensions:
-    x: 0.020
-    y: 0.040
-    z: 0.020
+    radius: 0.0075
+    height: 0.035
 
 grasp:
   # TCP +z 接近方向；TCP +x 由 approach_up_direction 确定（消掉绕接近轴旋转）。
