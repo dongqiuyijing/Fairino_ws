@@ -31,10 +31,9 @@ def write_world_sdf(config: dict[str, Any], path: str | None = None) -> str:
 
     obj_pos = as_vec3(obj["initial_pose"]["position"])
     obj_rpy = as_rpy(obj["initial_pose"]["orientation_rpy"])
-    obj_size = as_vec3(obj["dimensions"])
-
+    shape = str(obj.get("shape", "box")).lower()
     mass = float(obj.get("mass", 0.03))
-    inertia = _box_inertia(mass, obj_size)
+    object_geometry, inertia = _object_geometry_and_inertia(shape, obj, mass)
     sdf = _WORLD_TEMPLATE.format(
         column_name=_xml_name(column.get("name", "mounting_column")),
         column_pose=_pose_txt(column_pos, column_rpy),
@@ -46,7 +45,7 @@ def write_world_sdf(config: dict[str, Any], path: str | None = None) -> str:
 
         object_name=_xml_name(obj.get("name", "small_part")),
         object_pose=_pose_txt(obj_pos, obj_rpy),
-        object_size=_vec_txt(obj_size),
+        object_geometry=object_geometry,
 
         object_mass=f"{mass:.6g}",
         ixx=f"{inertia[0]:.8e}",
@@ -73,6 +72,35 @@ def write_world_sdf(config: dict[str, Any], path: str | None = None) -> str:
     return os.path.abspath(path)
 
 
+def _object_geometry_and_inertia(
+    shape: str,
+    obj: dict[str, Any],
+    mass: float,
+) -> tuple[str, tuple[float, float, float]]:
+    """Return identical collision/visual geometry XML and matching inertia."""
+    if shape == "box":
+        obj_size = as_vec3(obj["dimensions"])
+        inertia = _box_inertia(mass, obj_size)
+        geometry = (
+            "<box>\n"
+            f"              <size>{_vec_txt(obj_size)}</size>\n"
+            "            </box>"
+        )
+        return geometry, inertia
+    if shape == "cylinder":
+        radius = float(obj["dimensions"]["radius"])
+        height = float(obj["dimensions"]["height"])
+        inertia = _cylinder_inertia(mass, radius, height)
+        geometry = (
+            "<cylinder>\n"
+            f"              <radius>{radius:.6g}</radius>\n"
+            f"              <length>{height:.6g}</length>\n"
+            "            </cylinder>"
+        )
+        return geometry, inertia
+    raise ValueError(f"不支持的 object.shape: {shape}（仅支持 box / cylinder）")
+
+
 def _box_inertia(
     mass: float,
     size: tuple[float, float, float],
@@ -84,6 +112,18 @@ def _box_inertia(
         mass * (x_len * x_len + z_len * z_len) / 12.0,
         mass * (x_len * x_len + y_len * y_len) / 12.0,
     )
+
+
+def _cylinder_inertia(
+    mass: float,
+    radius: float,
+    height: float,
+) -> tuple[float, float, float]:
+    """Return ixx, iyy, izz for a solid cylinder about its center."""
+    ixx = mass * (3.0 * radius * radius + height * height) / 12.0
+    iyy = ixx
+    izz = 0.5 * mass * radius * radius
+    return ixx, iyy, izz
 
 
 def _pose_txt(
@@ -229,9 +269,7 @@ _WORLD_TEMPLATE = """<?xml version="1.0" ?>
         </inertial>
         <collision name="collision">
           <geometry>
-            <box>
-              <size>{object_size}</size>
-            </box>
+            {object_geometry}
           </geometry>
           <surface>
             <friction>
@@ -251,9 +289,7 @@ _WORLD_TEMPLATE = """<?xml version="1.0" ?>
         </collision>
         <visual name="visual">
           <geometry>
-            <box>
-              <size>{object_size}</size>
-            </box>
+            {object_geometry}
           </geometry>
           <material>
             <ambient>0.80 0.55 0.05 1</ambient>

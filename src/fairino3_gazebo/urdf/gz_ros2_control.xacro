@@ -10,9 +10,7 @@
 
       <hardware>
 
-        <plugin>
-          gz_ros2_control/GazeboSimSystem
-        </plugin>
+        <plugin>gz_ros2_control/GazeboSimSystem</plugin>
 
       </hardware>
 

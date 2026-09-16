@@ -206,11 +206,28 @@ class Stage4InspectionNode(Node):
             table_clearance=float(grasp_cfg["table_clearance"]),
             planning_frame=planning_frame,
         )
-        object_size = list(as_vec3(object_cfg["dimensions"]))
+        object_shape = str(object_cfg.get("shape", "box")).lower()
+        object_size: list[float] | None = None
+        object_radius = 0.0
+        object_height = 0.0
+        if object_shape == "box":
+            object_size = list(as_vec3(object_cfg["dimensions"]))
+            size_txt = f"size={object_size}"
+        elif object_shape == "cylinder":
+            object_radius = float(object_cfg["dimensions"]["radius"])
+            object_height = float(object_cfg["dimensions"]["height"])
+            size_txt = (
+                f"cylinder radius={object_radius:.4f} "
+                f"height={object_height:.4f}"
+            )
+        else:
+            raise InspectionError(
+                f"不支持的 object.shape: {object_shape}（仅支持 box / cylinder）"
+            )
         table_id = str(table_cfg["name"])
 
         self.get_logger().info(
-            f"零件 {object_name} size={object_size} "
+            f"零件 {object_name} {size_txt} "
             f"{format_pose(poses.object_pose)}"
         )
         self.get_logger().info(f"pre_grasp {format_pose(poses.pre_grasp_pose)}")
@@ -220,12 +237,21 @@ class Stage4InspectionNode(Node):
         sim_grasp.detach()
         scene.detach(object_name, attach_link)
         scene.remove(object_name)
-        scene.add_box(
-            object_name,
-            object_pose,
-            object_size,
-            planning_frame,
-        )
+        if object_shape == "box":
+            scene.add_box(
+                object_name,
+                object_pose,
+                object_size,
+                planning_frame,
+            )
+        else:
+            scene.add_cylinder(
+                object_name,
+                object_pose,
+                object_height,
+                object_radius,
+                planning_frame,
+            )
         scene.allow_collisions(object_name, touch_links, allowed=True)
         scene.allow_collisions(object_name, [table_id], allowed=True)
 
@@ -271,13 +297,23 @@ class Stage4InspectionNode(Node):
 
         self.get_logger().info("6. Attach object (MoveIt + optional Gazebo)")
         sim_grasp.attach()
-        scene.attach_box(
-            object_name,
-            pose_in_frame(poses.grasp_pose, poses.object_pose),
-            object_size,
-            link_name=attach_link,
-            touch_links=touch_links,
-        )
+        if object_shape == "box":
+            scene.attach_box(
+                object_name,
+                pose_in_frame(poses.grasp_pose, poses.object_pose),
+                object_size,
+                link_name=attach_link,
+                touch_links=touch_links,
+            )
+        else:
+            scene.attach_cylinder(
+                object_name,
+                pose_in_frame(poses.grasp_pose, poses.object_pose),
+                object_height,
+                object_radius,
+                link_name=attach_link,
+                touch_links=touch_links,
+            )
 
         self.get_logger().info("7. Lift object")
         self._linear_move(

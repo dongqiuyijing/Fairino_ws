@@ -128,6 +128,59 @@ class PlanningSceneClient:
             f"PlanningScene 已将 {object_id} 附着到 {link_name}"
         )
 
+    def add_cylinder(
+        self,
+        object_id: str,
+        pose: Pose,
+        height: float,
+        radius: float,
+        frame_id: str,
+    ) -> None:
+        """Add or replace a cylinder collision object."""
+        obj = self._cylinder_object(
+            object_id,
+            pose,
+            height,
+            radius,
+            frame_id,
+            CollisionObject.ADD,
+        )
+        self._obj_pub.publish(obj)
+        time.sleep(0.3)
+        self._node.get_logger().info(
+            f"PlanningScene 已添加 {object_id} "
+            f"cylinder height={float(height):.3f} radius={float(radius):.3f}"
+        )
+
+    def attach_cylinder(
+        self,
+        object_id: str,
+        pose_in_link: Pose,
+        height: float,
+        radius: float,
+        *,
+        link_name: str = ATTACH_LINK,
+        touch_links: Sequence[str] = GRIPPER_TOUCH_LINKS,
+    ) -> None:
+        """Attach a cylinder to a robot link and remove it from the world."""
+        attached = AttachedCollisionObject()
+        attached.link_name = link_name
+        attached.object = self._cylinder_object(
+            object_id,
+            pose_in_link,
+            height,
+            radius,
+            link_name,
+            CollisionObject.ADD,
+        )
+        attached.touch_links = list(touch_links)
+        attached.weight = 0.0
+        self._att_pub.publish(attached)
+        time.sleep(0.3)
+        self._node.get_logger().info(
+            f"PlanningScene 已将 {object_id} 附着到 {link_name}"
+        )
+
     def detach(self, object_id: str, link_name: str = ATTACH_LINK) -> None:
         """Detach an object from the robot if it is currently attached."""
         attached = AttachedCollisionObject()
@@ -160,6 +213,35 @@ class PlanningSceneClient:
             float(size[0]),
             float(size[1]),
             float(size[2]),
+        ]
+        header = Header()
+        header.frame_id = frame_id
+        header.stamp = self._node.get_clock().now().to_msg()
+        obj = CollisionObject()
+        obj.header = header
+        obj.id = object_id
+        # ROS 2 Python Pose() 默认四元数为 (0,0,0,0)。MoveIt 会丢弃该物体。
+        obj.pose.orientation.w = 1.0
+        obj.primitives.append(primitive)
+        obj.primitive_poses.append(pose)
+        obj.operation = operation
+        return obj
+
+    def _cylinder_object(
+        self,
+        object_id: str,
+        pose: Pose,
+        height: float,
+        radius: float,
+        frame_id: str,
+        operation: int,
+    ) -> CollisionObject:
+        """Build a CYLINDER CollisionObject."""
+        primitive = SolidPrimitive()
+        primitive.type = SolidPrimitive.CYLINDER
+        primitive.dimensions = [
+            float(height),
+            float(radius),
         ]
         header = Header()
         header.frame_id = frame_id

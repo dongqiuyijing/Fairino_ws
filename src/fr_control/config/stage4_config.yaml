@@ -125,7 +125,7 @@ object:
     frame: world
     position:
       x: 0.0
-      y: 0.15
+      y: 0.45
       z: 0.7675
     orientation_rpy:
       roll: 0.0
@@ -152,7 +152,7 @@ grasp:
     x: 1.0
     y: 0.0
     z: 0.0
-  table_top_z: 0.075
+  table_top_z: 0.750
   fingertip_from_tcp: 0.036
   table_clearance: 0.015
   cartesian_eef_step: 0.01
