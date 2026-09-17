@@ -7,6 +7,7 @@ the single source of experiment numbers.
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Sequence
 
@@ -51,6 +52,11 @@ def joint_positions(config: dict[str, Any]) -> list[float]:
     if missing:
         raise InspectionError(f"initial_joint_positions 缺少关节：{missing}")
     return [float(block[name]) for name in ARM_JOINTS]
+
+
+def joint_positions_rad(config: dict[str, Any]) -> list[float]:
+    """Return Home joints in ARM_JOINTS order, YAML degree → radian once."""
+    return [math.radians(value) for value in joint_positions(config)]
 
 
 def block_pose(block: dict[str, Any]) -> Pose:

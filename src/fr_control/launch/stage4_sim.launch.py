@@ -21,14 +21,45 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from fr_control.stage4_config import load_yaml, robot_base_rpy, robot_base_xyz
+from fr_control.constants import ARM_JOINTS
+from fr_control.stage4_config import (
+    joint_positions,
+    joint_positions_rad,
+    load_yaml,
+    robot_base_rpy,
+    robot_base_xyz,
+)
 from fr_control.stage4_world import write_world_sdf
+
+
+def _home_launch_args(config: dict) -> dict[str, str]:
+    """Convert YAML Home (degree) to Gazebo xacro args (radian) once."""
+    home_rad = joint_positions_rad(config)
+    return {
+        f"initial_{name}": f"{value:.8g}"
+        for name, value in zip(ARM_JOINTS, home_rad)
+    }
+
+
+def _home_log(config: dict) -> str:
+    """Print YAML degree and Gazebo radian Home for manual check."""
+    home_deg = joint_positions(config)
+    home_rad = joint_positions_rad(config)
+    lines = ["========== STAGE4 INITIAL JOINTS ==========", "YAML degree:"]
+    for name, value in zip(ARM_JOINTS, home_deg):
+        lines.append(f"{name} {value:.6f}")
+    lines.append("")
+    lines.append("Gazebo initial rad:")
+    for name, value in zip(ARM_JOINTS, home_rad):
+        lines.append(f"{name} {value:.6f}")
+    return "\n".join(lines)
 
 
 def _launch_sim(context, *args, **kwargs):
@@ -46,6 +77,7 @@ def _launch_sim(context, *args, **kwargs):
         "sim.launch.py",
     )
     return [
+        LogInfo(msg=_home_log(config)),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(sim_launch),
             launch_arguments={
@@ -63,6 +95,7 @@ def _launch_sim(context, *args, **kwargs):
                 "world_to_base_pitch": f"{rpy[1]:.8g}",
                 "world_to_base_yaw": f"{rpy[2]:.8g}",
                 "enable_grasp_weld": "false",
+                **_home_launch_args(config),
             }.items(),
         ),
         Node(

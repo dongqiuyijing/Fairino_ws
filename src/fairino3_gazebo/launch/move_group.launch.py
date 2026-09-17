@@ -70,6 +70,24 @@ def generate_launch_description() -> LaunchDescription:
                 " ",
                 "world_to_base_yaw:=",
                 LaunchConfiguration("world_to_base_yaw"),
+                " ",
+                "initial_j1:=",
+                LaunchConfiguration("initial_j1"),
+                " ",
+                "initial_j2:=",
+                LaunchConfiguration("initial_j2"),
+                " ",
+                "initial_j3:=",
+                LaunchConfiguration("initial_j3"),
+                " ",
+                "initial_j4:=",
+                LaunchConfiguration("initial_j4"),
+                " ",
+                "initial_j5:=",
+                LaunchConfiguration("initial_j5"),
+                " ",
+                "initial_j6:=",
+                LaunchConfiguration("initial_j6"),
             ]
         ),
         value_type=str,
@@ -137,6 +155,48 @@ def generate_launch_description() -> LaunchDescription:
             "world_to_base_yaw",
             default_value="0",
             description="URDF world→base_link 的 yaw（弧度）",
+        )
+    )
+    ld.add_action(
+        DeclareLaunchArgument(
+            "initial_j1",
+            default_value="0.8377",
+            description="Gazebo j1 初始位置（弧度）",
+        )
+    )
+    ld.add_action(
+        DeclareLaunchArgument(
+            "initial_j2",
+            default_value="-1.1927",
+            description="Gazebo j2 初始位置（弧度）",
+        )
+    )
+    ld.add_action(
+        DeclareLaunchArgument(
+            "initial_j3",
+            default_value="1.1129",
+            description="Gazebo j3 初始位置（弧度）",
+        )
+    )
+    ld.add_action(
+        DeclareLaunchArgument(
+            "initial_j4",
+            default_value="-1.1499",
+            description="Gazebo j4 初始位置（弧度）",
+        )
+    )
+    ld.add_action(
+        DeclareLaunchArgument(
+            "initial_j5",
+            default_value="-3.1393",
+            description="Gazebo j5 初始位置（弧度）",
+        )
+    )
+    ld.add_action(
+        DeclareLaunchArgument(
+            "initial_j6",
+            default_value="2.0996",
+            description="Gazebo j6 初始位置（弧度）",
         )
     )
     ld.add_action(

@@ -21,7 +21,13 @@ from launch.actions import (
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
-from fr_control.stage4_config import load_yaml, robot_base_rpy, robot_base_xyz
+from fr_control.constants import ARM_JOINTS
+from fr_control.stage4_config import (
+    joint_positions_rad,
+    load_yaml,
+    robot_base_rpy,
+    robot_base_xyz,
+)
 
 
 def _delayed_moveit(context, *args, **kwargs):
@@ -35,6 +41,10 @@ def _delayed_moveit(context, *args, **kwargs):
     config = load_yaml(LaunchConfiguration("config_file").perform(context))
     position = robot_base_xyz(config)
     rpy = robot_base_rpy(config)
+    home_rad = {
+        f"initial_{name}": f"{value:.8g}"
+        for name, value in zip(ARM_JOINTS, joint_positions_rad(config))
+    }
     gazebo_share = get_package_share_directory("fairino3_gazebo")
     moveit_share = get_package_share_directory("fairino3_v6_moveit2_config")
     delayed = [
@@ -54,6 +64,7 @@ def _delayed_moveit(context, *args, **kwargs):
                 "world_to_base_roll": f"{rpy[0]:.8g}",
                 "world_to_base_pitch": f"{rpy[1]:.8g}",
                 "world_to_base_yaw": f"{rpy[2]:.8g}",
+                **home_rad,
             }.items(),
         ),
     ]
