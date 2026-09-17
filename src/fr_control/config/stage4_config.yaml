@@ -179,21 +179,28 @@ gripper_touch_links:
   - gripper_gap_link
 
 inspection:
-  # P1 = 当前被检测区域中心的目标位置。
-  # 对于不同 Inspection View，零件中心位置不同。
+  # P1 = 当前被检测区域/表面中心的 world 坐标目标。
+  # 不是 object center，也不是 TCP position。
+  # 对于不同 Inspection View，零件中心位置不同，但 inspected surface center = P1。
   position:
-    frame: base_link
-    x: 0.40
-    y: 0.05
-    z: 0.28
-  # D1 = 被检面法向应对齐的方向（在 inspection.position.frame 下，程序会归一化）。
-  direction:
-    frame: base_link
+    frame: world
     x: 0.0
-    y: 1.0
+    y: 0.4
+    z: 1.1
+
+  # D1 = 被检测面的外法向最终朝向。
+  # 相机位于检测面的 world -Y 一侧，因此检测面正面朝 world -Y。
+  direction:
+    frame: world
+    x: 0.0
+    y: -1.0
     z: 0.0
+
+  # canonical 检测姿态的“上方向”。
+  # world +Z = 现实竖直向上。
+  # STEP 10 以后这是 roll 的 soft preference。
   up_direction:
-    frame: base_link
+    frame: world
     x: 0.0
     y: 0.0
     z: 1.0
