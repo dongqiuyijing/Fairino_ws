@@ -63,12 +63,12 @@ robot:
       w: 0.2705980500730986
 
   initial_joint_positions:
-    j1: 139.629 #2.4468
-    j2: -91.446 #-1.6214
-    j3: 95.946 #1.5465
-    j4: -95.318 #-1.5877
-    j5: -79.32 #-1.6368
-    j6: 136.408 #0.0
+    j1: -134.053 #2.4468
+    j2: -123.046 #-1.6214
+    j3: -112.585 #1.5465
+    j4: -24.971 #-1.5877
+    j5: -34.448 #-1.6368
+    j6: 47.587 #0.0
 
 column:
   name: mounting_column
@@ -107,7 +107,7 @@ table:
     frame: world
     position:
       x: 0.0
-      y: 0.8
+      y: 0.7
       z: 0.735
     orientation_rpy:
       roll: 0.0
@@ -125,7 +125,7 @@ object:
     frame: world
     position:
       x: 0.0
-      y: 0.45
+      y: 0.3
       z: 0.7675
     orientation_rpy:
       roll: 0.0
