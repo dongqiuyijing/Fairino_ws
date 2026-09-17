@@ -179,7 +179,8 @@ gripper_touch_links:
   - gripper_gap_link
 
 inspection:
-  # P1 = 零件中心目标位置，不是 TCP 目标。
+  # P1 = 当前被检测区域中心的目标位置。
+  # 对于不同 Inspection View，零件中心位置不同。
   position:
     frame: base_link
     x: 0.40
