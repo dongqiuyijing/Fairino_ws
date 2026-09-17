@@ -21,7 +21,7 @@
 
         <state_interface name="position">
           <param name="initial_value">
-            2.4468
+            -2.3397
           </param>
         </state_interface>
 
@@ -36,7 +36,7 @@
 
         <state_interface name="position">
           <param name="initial_value">
-            -1.6214
+            -2.1476
           </param>
         </state_interface>
 
@@ -51,7 +51,7 @@
 
         <state_interface name="position">
           <param name="initial_value">
-            1.5465
+            -1.9650
           </param>
         </state_interface>
 
@@ -66,7 +66,7 @@
 
         <state_interface name="position">
           <param name="initial_value">
-            -1.5877
+            -0.4358
           </param>
         </state_interface>
 
@@ -81,7 +81,7 @@
 
         <state_interface name="position">
           <param name="initial_value">
-            -1.6368
+            -0.6012
           </param>
         </state_interface>
 
@@ -96,7 +96,7 @@
 
         <state_interface name="position">
           <param name="initial_value">
-            0.0
+            0.8306
           </param>
         </state_interface>
 
