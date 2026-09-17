@@ -54,7 +54,7 @@ robot:
     position:
       x: 0.10
       y: 0.0
-      z: 1.20
+      z: 1.10
 
     orientation_xyzw:
       x: -0.6532814824381882
