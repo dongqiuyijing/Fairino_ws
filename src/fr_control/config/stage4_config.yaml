@@ -177,10 +177,6 @@ gripper_touch_links:
   - finger_l
   - finger_r
   - gripper_gap_link
-  - wrist3_link
-  - wrist2_link
-  - wrist1_link
-  - forearm_link
 
 inspection:
   # P1 = 零件中心目标位置，不是 TCP 目标。
