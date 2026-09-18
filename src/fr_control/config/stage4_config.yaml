@@ -62,13 +62,15 @@ robot:
       z: -0.6532814824381883
       w: 0.2705980500730986
 
+  # Task-planning Home / initial target (degrees). Not hardware boot,
+  # encoder offset, or URDF zero. MTC reads this via joint_positions().
   initial_joint_positions:
-    j1: -134.053 #2.4468
-    j2: -123.046 #-1.6214
-    j3: -112.585 #1.5465
-    j4: -24.971 #-1.5877
-    j5: -34.448 #-1.6368
-    j6: 47.587 #0.0
+    j1: -130.142302560334
+    j2: -94.12911896658416
+    j3: -107.1221379950495
+    j4: -164.5057965269183
+    j5: -0.19340288521039606
+    j6: 48.12272780012376
 
 column:
   name: mounting_column
