@@ -3,11 +3,13 @@
 
 Requires the existing dual_bringup.launch.py to be running. Does NOT start an
 SDK/RPC connection, move either arm, use the virtual gripper_joint, or call
-ActGripper(reset/activate). The real grippers are separate GripperBridge
-services owned by each real hardware plugin.
+ActGripper(reset). With --run each selected gripper receives an explicit
+ActGripper(activate) after confirmation; the real grippers are separate
+GripperBridge services owned by each real hardware plugin.
 
 Default: ping only. With --run: A then B (or --arm a/b), each with its own
-explicit operator confirmation: open(0) -> partial-close(20) -> open(0).
+explicit operator confirmation: activate -> open(0) -> partial-close(20)
+-> open(0).
 The test stops on the first error; it never silently continues to the next
 gripper or retries an ambiguous/timeout motion.
 """
@@ -84,8 +86,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--run", action="store_true",
-        help="Actually command a small open -> partial close -> open cycle; "
-        "without --run only ping is sent",
+        help="After per-arm confirmation, activate then command a small "
+        "open -> partial close -> open cycle; without --run only ping is sent",
     )
     args = parser.parse_args()
     arms = ("a", "b") if args.arm == "both" else (args.arm,)
@@ -117,17 +119,19 @@ def main() -> int:
         for arm in arms:
             name = SERVICES[arm]
             print(
-                f"\nArm {arm.upper()}: real gripper will OPEN(0), "
+                f"\nArm {arm.upper()}: real gripper will ACTIVATE, OPEN(0), "
                 f"PARTIAL CLOSE({PARTIAL_CLOSE_POSITION}), OPEN(0).\n"
                 "Clear the fingers and area; remove any held object. "
-                "Confirm this arm is safe, enabled, and gripper is already "
-                "activated. No robot arm movement is requested.\n"
+                "Confirm this arm is safe, enabled, and ready for gripper "
+                "activation. No reset or robot arm movement is requested.\n"
                 f"Type {arm.upper()} and press Enter to continue "
                 "(anything else cancels): ",
                 end="", flush=True,
             )
             if input().strip() != arm.upper():
                 raise TestError(f"Operator cancelled before Arm {arm.upper()}")
+            call(node, clients[arm], name, "activate")
+            time.sleep(1.0)
             for position in (
                 OPEN_POSITION, PARTIAL_CLOSE_POSITION, OPEN_POSITION
             ):
