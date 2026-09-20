@@ -1,3 +1,17 @@
+# Explicitly select OMPL; otherwise the named "ompl" pipeline can load
+# another installed planner plugin (observed: CHOMP).
+planning_plugin: ompl_interface/OMPLPlanner
+
+# MoveIt 2 Humble request-adapter format. Time-parameterize the geometric
+# path before passing its JointTrajectory to the arm controllers.
+request_adapters: >-
+  default_planner_request_adapters/AddTimeOptimalParameterization
+  default_planner_request_adapters/ResolveConstraintFrames
+  default_planner_request_adapters/FixWorkspaceBounds
+  default_planner_request_adapters/FixStartStateBounds
+  default_planner_request_adapters/FixStartStateCollision
+  default_planner_request_adapters/FixStartStatePathConstraints
+
 planner_configs:
   RRTConnectkConfigDefault:
     type: geometric::RRTConnect
