@@ -1,0 +1,133 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="dual_arm_position_joint" params="name initial_positions use_initial">
+    <joint name="${name}">
+      <command_interface name="position"/>
+      <xacro:if value="${use_initial}">
+        <state_interface name="position">
+          <param name="initial_value">${initial_positions[name]}</param>
+        </state_interface>
+      </xacro:if>
+      <xacro:unless value="${use_initial}">
+        <state_interface name="position"/>
+      </xacro:unless>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro
+      name="dual_arm_system"
+      params="name prefix backend controller_ip gripper_service gripper_node initial_positions">
+
+    <xacro:property name="is_real" value="${backend == 'real'}"/>
+
+    <ros2_control name="${name}" type="system">
+      <hardware>
+        <xacro:if value="${is_real}">
+          <plugin>fairino_hardware_dual/FairinoDualHardwareInterface</plugin>
+          <param name="controller_ip">${controller_ip}</param>
+          <param name="gripper_service">${gripper_service}</param>
+          <param name="gripper_node">${gripper_node}</param>
+        </xacro:if>
+        <xacro:unless value="${is_real}">
+          <plugin>mock_components/GenericSystem</plugin>
+        </xacro:unless>
+      </hardware>
+
+      <xacro:dual_arm_position_joint
+          name="${prefix}j1"
+          initial_positions="${initial_positions}"
+          use_initial="${not is_real}"/>
+      <xacro:dual_arm_position_joint
+          name="${prefix}j2"
+          initial_positions="${initial_positions}"
+          use_initial="${not is_real}"/>
+      <xacro:dual_arm_position_joint
+          name="${prefix}j3"
+          initial_positions="${initial_positions}"
+          use_initial="${not is_real}"/>
+      <xacro:dual_arm_position_joint
+          name="${prefix}j4"
+          initial_positions="${initial_positions}"
+          use_initial="${not is_real}"/>
+      <xacro:dual_arm_position_joint
+          name="${prefix}j5"
+          initial_positions="${initial_positions}"
+          use_initial="${not is_real}"/>
+      <xacro:dual_arm_position_joint
+          name="${prefix}j6"
+          initial_positions="${initial_positions}"
+          use_initial="${not is_real}"/>
+    </ros2_control>
+  </xacro:macro>
+
+  <!--
+    Gripper joints are visual/mimic only. The real Fairino plugin maps 6 arm
+    joints. Always publish both gripper joints from mock hardware so MoveIt
+    has a complete robot state.
+  -->
+  <xacro:macro name="dual_gripper_mock_system" params="initial_positions">
+    <ros2_control name="DualGripperMockSystem" type="system">
+      <hardware>
+        <plugin>mock_components/GenericSystem</plugin>
+      </hardware>
+      <xacro:dual_arm_position_joint
+          name="arm_a_gripper_joint"
+          initial_positions="${initial_positions}"
+          use_initial="true"/>
+      <xacro:dual_arm_position_joint
+          name="arm_b_gripper_joint"
+          initial_positions="${initial_positions}"
+          use_initial="true"/>
+    </ros2_control>
+  </xacro:macro>
+
+  <xacro:macro
+      name="dual_fr3_ros2_control"
+      params="initial_positions_file
+              arm_a_backend arm_a_ip arm_a_gripper_service arm_a_gripper_node arm_a_hw_name
+              arm_b_backend arm_b_ip arm_b_gripper_service arm_b_gripper_node arm_b_hw_name">
+
+    <xacro:property
+        name="initial_positions"
+        value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
+
+    <xacro:dual_arm_system
+        name="${arm_a_hw_name}"
+        prefix="arm_a_"
+        backend="${arm_a_backend}"
+        controller_ip="${arm_a_ip}"
+        gripper_service="${arm_a_gripper_service}"
+        gripper_node="${arm_a_gripper_node}"
+        initial_positions="${initial_positions}"/>
+
+    <xacro:dual_arm_system
+        name="${arm_b_hw_name}"
+        prefix="arm_b_"
+        backend="${arm_b_backend}"
+        controller_ip="${arm_b_ip}"
+        gripper_service="${arm_b_gripper_service}"
+        gripper_node="${arm_b_gripper_node}"
+        initial_positions="${initial_positions}"/>
+
+    <xacro:dual_gripper_mock_system
+        initial_positions="${initial_positions}"/>
+  </xacro:macro>
+
+  <!-- Keep the old mock-only name as a wrapper for dual_mock_bringup. -->
+  <xacro:macro name="dual_fr3_mock_ros2_control" params="initial_positions_file">
+    <xacro:dual_fr3_ros2_control
+        initial_positions_file="${initial_positions_file}"
+        arm_a_backend="mock"
+        arm_a_ip="192.168.58.2"
+        arm_a_gripper_service="/arm_a/fairino_gripper/command"
+        arm_a_gripper_node="arm_a_fairino_gripper_bridge"
+        arm_a_hw_name="ArmAMockSystem"
+        arm_b_backend="mock"
+        arm_b_ip="192.168.58.5"
+        arm_b_gripper_service="/arm_b/fairino_gripper/command"
+        arm_b_gripper_node="arm_b_fairino_gripper_bridge"
+        arm_b_hw_name="ArmBMockSystem"/>
+  </xacro:macro>
+
+</robot>

@@ -1,0 +1,67 @@
+# Dual-arm workcell for workcell_scene_loader.
+# planning_frame is world so column/table stay in the shared frame.
+# Column/table geometry copied from fr_control/config/stage4_config.yaml.
+# robot.base_pose is required by the existing loader API; with
+# planning_frame=world it is unused for pose conversion.
+
+frames:
+  world: world
+  robot_base: arm_a_base_link
+  object: object_frame
+  tcp: arm_a_gripper_tcp
+
+move_group: arm_a
+ee_link: arm_a_gripper_tcp
+base_frame: arm_a_base_link
+planning_frame: world
+attach_link: arm_a_gripper_tcp
+
+robot:
+  base_pose:
+    frame: world
+    position:
+      x: 0.10
+      y: 0.0
+      z: 1.10
+    orientation_xyzw:
+      x: -0.6532814824381882
+      y: 0.2705980500730985
+      z: -0.6532814824381883
+      w: 0.2705980500730986
+
+column:
+  name: mounting_column
+  initial_pose:
+    frame: world
+    position:
+      x: 0
+      y: 0.0
+      z: 0.7
+    orientation_rpy:
+      roll: 0.0
+      pitch: 0.0
+      yaw: 0.0
+  dimensions:
+    x: 0.2
+    y: 0.2
+    z: 1.4
+  touch_links:
+    - arm_a_base_link
+    - arm_b_base_link
+
+table:
+  name: table
+  initial_pose:
+    frame: world
+    position:
+      x: 0.0
+      y: 0.7
+      z: 0.735
+    orientation_rpy:
+      roll: 0.0
+      pitch: 0.0
+      yaw: 0.0
+  dimensions:
+    x: 1
+    y: 1
+    z: 0.03

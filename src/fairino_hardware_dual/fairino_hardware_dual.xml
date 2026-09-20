@@ -1,0 +1,10 @@
+<library path="fairino_dual_hardware">
+  <class name="fairino_hardware_dual/FairinoDualHardwareInterface"
+         type="fairino_hardware_dual::FairinoDualHardwareInterface"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+      Parameterized Fairino hardware interface for dual-arm use.
+      Reads controller_ip, gripper_service, and gripper_node from URDF.
+    </description>
+  </class>
+</library>

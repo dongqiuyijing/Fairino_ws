@@ -1,0 +1,15 @@
+initial_positions:
+  arm_a_j1: 0
+  arm_a_j2: 0
+  arm_a_j3: 0
+  arm_a_j4: 0
+  arm_a_j5: 0
+  arm_a_j6: 0
+  arm_a_gripper_joint: 0
+  arm_b_j1: 0
+  arm_b_j2: 0
+  arm_b_j3: 0
+  arm_b_j4: 0
+  arm_b_j5: 0
+  arm_b_j6: 0
+  arm_b_gripper_joint: 0

@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>fairino_hardware_dual</name>
+  <version>0.1.0</version>
+  <description>
+    Overlay Fairino hardware plugin with per-instance controller_ip and
+    gripper service names. Does not replace fairino_hardware_v3_9_7.
+  </description>
+  <maintainer email="cyberbraindualarm@todo.todo">cyberbraindualarm</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>hardware_interface</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>fairino_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

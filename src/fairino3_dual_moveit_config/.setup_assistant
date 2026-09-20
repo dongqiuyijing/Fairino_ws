@@ -1,0 +1,6 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: fairino3_dual_moveit_config
+    relative_path: urdf/dual_fr3.urdf.xacro
+  srdf:
+    relative_path: config/dual_fr3.srdf

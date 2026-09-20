@@ -1,0 +1,77 @@
+# Joint limits copied from fairino3_v6_moveit2_config/config/joint_limits.yaml
+# with arm_a_ / arm_b_ prefixes. Do not edit the single-arm file for dual use.
+
+default_velocity_scaling_factor: 0.1
+default_acceleration_scaling_factor: 0.1
+
+joint_limits:
+  arm_a_j1:
+    has_velocity_limits: true
+    max_velocity: 3.15
+    has_acceleration_limits: false
+    max_acceleration: 0
+  arm_a_j2:
+    has_velocity_limits: true
+    max_velocity: 3.15
+    has_acceleration_limits: false
+    max_acceleration: 0
+  arm_a_j3:
+    has_velocity_limits: true
+    max_velocity: 3.15
+    has_acceleration_limits: false
+    max_acceleration: 0
+  arm_a_j4:
+    has_velocity_limits: true
+    max_velocity: 3.2
+    has_acceleration_limits: false
+    max_acceleration: 0
+  arm_a_j5:
+    has_velocity_limits: true
+    max_velocity: 3.2
+    has_acceleration_limits: false
+    max_acceleration: 0
+  arm_a_j6:
+    has_velocity_limits: true
+    max_velocity: 3.2
+    has_acceleration_limits: false
+    max_acceleration: 0
+  arm_a_gripper_joint:
+    has_velocity_limits: true
+    max_velocity: 0.5
+    has_acceleration_limits: true
+    max_acceleration: 1.0
+  arm_b_j1:
+    has_velocity_limits: true
+    max_velocity: 3.15
+    has_acceleration_limits: false
+    max_acceleration: 0
+  arm_b_j2:
+    has_velocity_limits: true
+    max_velocity: 3.15
+    has_acceleration_limits: false
+    max_acceleration: 0
+  arm_b_j3:
+    has_velocity_limits: true
+    max_velocity: 3.15
+    has_acceleration_limits: false
+    max_acceleration: 0
+  arm_b_j4:
+    has_velocity_limits: true
+    max_velocity: 3.2
+    has_acceleration_limits: false
+    max_acceleration: 0
+  arm_b_j5:
+    has_velocity_limits: true
+    max_velocity: 3.2
+    has_acceleration_limits: false
+    max_acceleration: 0
+  arm_b_j6:
+    has_velocity_limits: true
+    max_velocity: 3.2
+    has_acceleration_limits: false
+    max_acceleration: 0
+  arm_b_gripper_joint:
+    has_velocity_limits: true
+    max_velocity: 0.5
+    has_acceleration_limits: true
+    max_acceleration: 1.0

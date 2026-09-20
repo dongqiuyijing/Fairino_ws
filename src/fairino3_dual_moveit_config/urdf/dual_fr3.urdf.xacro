@@ -1,0 +1,105 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro"
+       name="fairino3_dual_robot">
+
+  <!--
+    Dual FR3 planning model. Arm A mount is passed in from launch, which
+    reads fr_control/config/stage4_config.yaml (not duplicated here).
+    Arm B mount is the nominal Rx(pi)*Rz(pi)*R_A pose until the real arm
+    is calibrated. Position is the opposite column face; orientation is
+    that pose rolled 180 deg about world X.
+    Both hardware backends default to mock. dual_bringup.launch.py can
+    switch an arm to the overlay FairinoDualHardwareInterface without
+    loading the original single-arm plugin.
+  -->
+
+  <xacro:arg name="initial_positions_file"
+             default="$(find fairino3_dual_moveit_config)/config/initial_positions.yaml"/>
+
+  <xacro:arg name="arm_a_x" default="0.10"/>
+  <xacro:arg name="arm_a_y" default="0.0"/>
+  <xacro:arg name="arm_a_z" default="1.10"/>
+  <xacro:arg name="arm_a_roll" default="0.0"/>
+  <xacro:arg name="arm_a_pitch" default="0.0"/>
+  <xacro:arg name="arm_a_yaw" default="0.0"/>
+
+  <xacro:arg name="arm_b_x" default="-0.10"/>
+  <xacro:arg name="arm_b_y" default="0.0"/>
+  <xacro:arg name="arm_b_z" default="1.10"/>
+  <xacro:arg name="arm_b_roll" default="1.570796326794897"/>
+  <xacro:arg name="arm_b_pitch" default="0.7853981633974482"/>
+  <xacro:arg name="arm_b_yaw" default="-1.5707963267948966"/>
+
+  <xacro:arg name="handover_x" default="0.0"/>
+  <xacro:arg name="handover_y" default="0.35"/>
+  <xacro:arg name="handover_z" default="1.10"/>
+
+  <xacro:arg name="arm_a_backend" default="mock"/>
+  <xacro:arg name="arm_a_ip" default="192.168.58.2"/>
+  <xacro:arg name="arm_a_gripper_service" default="/arm_a/fairino_gripper/command"/>
+  <xacro:arg name="arm_a_gripper_node" default="arm_a_fairino_gripper_bridge"/>
+  <xacro:arg name="arm_a_hw_name" default="ArmAMockSystem"/>
+
+  <xacro:arg name="arm_b_backend" default="mock"/>
+  <xacro:arg name="arm_b_ip" default="192.168.58.5"/>
+  <xacro:arg name="arm_b_gripper_service" default="/arm_b/fairino_gripper/command"/>
+  <xacro:arg name="arm_b_gripper_node" default="arm_b_fairino_gripper_bridge"/>
+  <xacro:arg name="arm_b_hw_name" default="ArmBMockSystem"/>
+
+  <xacro:include filename="$(find fairino3_dual_moveit_config)/urdf/fr3_arm.xacro"/>
+  <xacro:include filename="$(find fairino3_dual_moveit_config)/urdf/hkv_gripper_prefixed.xacro"/>
+  <xacro:include filename="$(find fairino3_dual_moveit_config)/urdf/dual_fr3.ros2_control.xacro"/>
+
+  <link name="world"/>
+
+  <xacro:fr3_arm prefix="arm_a_"/>
+  <xacro:hkv_gripper_prefixed
+      prefix="arm_a_"
+      parent="arm_a_wrist3_link"
+      mount_rpy="0 0 ${pi/4}"/>
+
+  <joint name="world_to_arm_a_base" type="fixed">
+    <parent link="world"/>
+    <child link="arm_a_base_link"/>
+    <origin
+        xyz="$(arg arm_a_x) $(arg arm_a_y) $(arg arm_a_z)"
+        rpy="$(arg arm_a_roll) $(arg arm_a_pitch) $(arg arm_a_yaw)"/>
+  </joint>
+
+  <xacro:fr3_arm prefix="arm_b_"/>
+  <xacro:hkv_gripper_prefixed
+      prefix="arm_b_"
+      parent="arm_b_wrist3_link"
+      mount_rpy="0 0 ${pi/4}"/>
+
+  <joint name="world_to_arm_b_base" type="fixed">
+    <parent link="world"/>
+    <child link="arm_b_base_link"/>
+    <origin
+        xyz="$(arg arm_b_x) $(arg arm_b_y) $(arg arm_b_z)"
+        rpy="$(arg arm_b_roll) $(arg arm_b_pitch) $(arg arm_b_yaw)"/>
+  </joint>
+
+  <link name="handover_frame"/>
+  <joint name="world_to_handover_frame" type="fixed">
+    <parent link="world"/>
+    <child link="handover_frame"/>
+    <origin
+        xyz="$(arg handover_x) $(arg handover_y) $(arg handover_z)"
+        rpy="0 0 0"/>
+  </joint>
+
+  <xacro:dual_fr3_ros2_control
+      initial_positions_file="$(arg initial_positions_file)"
+      arm_a_backend="$(arg arm_a_backend)"
+      arm_a_ip="$(arg arm_a_ip)"
+      arm_a_gripper_service="$(arg arm_a_gripper_service)"
+      arm_a_gripper_node="$(arg arm_a_gripper_node)"
+      arm_a_hw_name="$(arg arm_a_hw_name)"
+      arm_b_backend="$(arg arm_b_backend)"
+      arm_b_ip="$(arg arm_b_ip)"
+      arm_b_gripper_service="$(arg arm_b_gripper_service)"
+      arm_b_gripper_node="$(arg arm_b_gripper_node)"
+      arm_b_hw_name="$(arg arm_b_hw_name)"/>
+
+</robot>
