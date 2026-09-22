@@ -6,8 +6,9 @@ At the shared midpoint TARGET in world coordinates:
   Arm B TCP = TARGET - (GAP/2, 0, 0), finger forward (TCP +Z) = world +X.
   Both TCP +X (the jaw opening/closing direction) = world +Z.
 
---arm both requests ONE MoveIt plan for the 'dual_arms' group with BOTH
-TCP poses constrained. It executes ONE combined RobotTrajectory through
+--arm both solves each TCP via collision-aware single-arm IK, validates the
+combined 12-joint target, then plans ONE dual_arms joint trajectory. It
+executes ONE combined RobotTrajectory through
 the existing dual-arm MoveIt controllers, NOT two uncoordinated actions.
 30 mm is TCP-to-TCP distance, NOT guaranteed clearance between grippers.
 Default: PLAN ONLY. This test never controls the grippers or starts SDK RPC.
@@ -211,7 +212,8 @@ def solve_arm_ik(node, client, arm, seed):
 def require_valid_state(node, client, state, label):
     req = GetStateValidity.Request()
     req.robot_state = state
-    req.group_name = "dual_arms"
+    # Empty group checks COMPLETE robot, including gripper fingers outside arm chains.
+    req.group_name = ""
     result = service_call(node, client, req, label, timeout=8.0)
     if not result.valid:
         contacts = [
