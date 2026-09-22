@@ -110,9 +110,9 @@ def main() -> int:
     parser.add_argument("--z", required=True, type=float, help="world Z, metres")
     parser.add_argument("--execute", action="store_true",
                         help="Move after planning and a second human confirmation")
-    parser.add_argument("--max-displacement", type=float, default=0.20,
+    parser.add_argument("--max-displacement", type=float, default=0.50,
                         help="Maximum permitted straight-line distance from current TCP "
-                             "to target (metres); default 0.20")
+                             "to target (metres); default 0.50")
     parser.add_argument("--velocity-scale", type=float, default=0.05)
     parser.add_argument("--acceleration-scale", type=float, default=0.05)
     parser.add_argument("--max-tf-age", type=float, default=1.5)
@@ -122,8 +122,8 @@ def main() -> int:
 
     if not all(math.isfinite(v) for v in (args.x, args.y, args.z)):
         parser.error("target XYZ must be finite numbers in metres")
-    if not 0 < args.max_displacement <= 0.20:
-        parser.error("0 < --max-displacement <= 0.20 m for this guarded test")
+    if not 0 < args.max_displacement <= 0.50:
+        parser.error("0 < --max-displacement <= 0.50 m for this guarded test")
     if not (0 < args.velocity_scale <= 0.2 and
             0 < args.acceleration_scale <= 0.2):
         parser.error("velocity and acceleration scaling must be in (0, 0.2]")

@@ -34,7 +34,7 @@ from fr_control.moveit_arm import MoveItArm, MoveItError
 from go_world_tcp import WorldTcpGo, distance, fmt, position, read_real_backend
 
 
-TARGET = (0.0, 0.1, 1.1)
+TARGET = (0.0, 0.3, 1.1)
 ROOT_HALF = math.sqrt(0.5)
 # Quaternion xyzw. Jaw separation: TCP +X = world +Z for BOTH.
 # A: TCP +Z = world -X (Ry(-90 deg))
