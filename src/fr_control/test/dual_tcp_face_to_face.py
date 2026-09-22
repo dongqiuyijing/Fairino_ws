@@ -16,20 +16,21 @@ Default: PLAN ONLY. This test never controls the grippers or starts SDK RPC.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import math
 import os
 import sys
 import time
 
 from ament_index_python.packages import get_package_share_directory
-from geometry_msgs.msg import Pose
-from moveit_msgs.msg import (
-    BoundingVolume, Constraints, OrientationConstraint, PositionConstraint,
-)
+from geometry_msgs.msg import Pose, PoseStamped
+from moveit_msgs.msg import MoveItErrorCodes, RobotState
+from moveit_msgs.srv import GetPositionIK, GetPositionFK, GetStateValidity
 import rclpy
 from rclpy.time import Time
-from shape_msgs.msg import SolidPrimitive
-from std_msgs.msg import Header
+from rclpy.duration import Duration
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import JointState
 from tf2_ros import TransformException
 import yaml
 
@@ -47,6 +48,7 @@ QUATERNION = {
     "b": (ROOT_HALF, 0.0, ROOT_HALF, 0.0),
 }
 TCP = {"a": "arm_a_gripper_tcp", "b": "arm_b_gripper_tcp"}
+ARM_JOINTS = {arm: tuple(f"arm_{arm}_j{i}" for i in range(1, 7)) for arm in ("a", "b")}
 
 
 def target_xyz(arm: str) -> tuple[float, float, float]:
@@ -201,6 +203,16 @@ def main() -> int:
         for arm in arms:
             read_real_backend(arm)
         node = WorldTcpGo("a" if args.arm == "both" else args.arm, args.max_tf_age)
+        node._both_joint_msg = None
+        node._both_joint_arrived = None
+
+        def on_both_joints(msg):
+            node._both_joint_msg = msg
+            node._both_joint_arrived = time.monotonic()
+
+        node._both_sub = node.create_subscription(
+            JointState, "/joint_states", on_both_joints, qos_profile_sensor_data
+        )
         before = {arm: fresh_tcp(node, arm) for arm in ("a", "b")}
         print(f"Shared world midpoint: {fmt(TARGET)}")
         print(f"Requested TCP-to-TCP distance along world X: {GAP * 1000:.1f} mm")
@@ -265,16 +277,8 @@ def main() -> int:
                 "One target is at/in configured column +20 mm margin; "
                 "real execution refused. Correct real geometry/target first."
             )
-        # Single-arm mode must not bring a stopped second arm within the
-        # opposing goal; use --arm both when both goal poses are desired.
-        if args.arm != "both":
-            other = "b" if args.arm == "a" else "a"
-            if distance(position(before[other]), target_xyz(args.arm)) < 0.15:
-                raise RuntimeError(
-                    "Other arm TCP within 150 mm of goal; "
-                    "single-arm execution refused. Use --arm both for "
-                    "coordinated approach or retreat safely."
-                )
+        # No arbitrary TCP-only radius: the full robot's geometry,
+        # including the stationary other arm, must pass validity checks.
         if not sys.stdin.isatty():
             raise RuntimeError("--execute requires a human-operated terminal")
 
@@ -302,16 +306,10 @@ def main() -> int:
         # ONE action goal, not two concurrent independent motion commands.
         moveit.execute(trajectory)
         for arm in arms:
-            reached = fresh_tcp(node, arm)
-            err_mm = distance(position(reached), target_xyz(arm)) * 1000.0
-            print(
-                f"Arm {arm.upper()} final: {fmt(position(reached))}; "
-                f"TCP/model XYZ error={err_mm:.3f} mm"
+            wait_for_settled_tcp(
+                node, arm, args.position_tolerance,
+                Time.from_msg(before[arm].header.stamp).nanoseconds,
             )
-            if err_mm > args.position_tolerance * 1000.0:
-                raise RuntimeError(
-                    f"Arm {arm.upper()} outside TCP position tolerance; no retry"
-                )
         if args.arm == "both":
             a, b = fresh_tcp(node, "a"), fresh_tcp(node, "b")
             print(
