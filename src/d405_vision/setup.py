@@ -26,6 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             'pixel_to_3d = d405_vision.pixel_to_3d:main',
+            'depth_grayscale = d405_vision.depth_grayscale:main',
         ],
     },
 )

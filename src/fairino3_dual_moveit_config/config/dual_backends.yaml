@@ -6,13 +6,13 @@
 # Do not set arm_b.backend: real until the second robot exists.
 
 arm_a:
-  backend: real
+  backend: real # mock # real
   controller_ip: "192.168.58.2"
   gripper_service: /arm_a/fairino_gripper/command
   gripper_node: arm_a_fairino_gripper_bridge
 
 arm_b:
-  backend: real
+  backend: real #mock # real
   controller_ip: "192.168.58.5"
   gripper_service: /arm_b/fairino_gripper/command
   gripper_node: arm_b_fairino_gripper_bridge
