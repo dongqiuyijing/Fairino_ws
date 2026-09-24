@@ -70,6 +70,8 @@ private:
     int error_code{-1};
     std::string message;
     bool finished{false};
+    std::chrono::steady_clock::time_point arm_settle_deadline{};
+    bool arm_settle_wait_logged{false};
     std::condition_variable cv;
   };
 

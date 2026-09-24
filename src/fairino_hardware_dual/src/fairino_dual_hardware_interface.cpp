@@ -12,6 +12,7 @@ namespace fairino_hardware_dual{
 
 namespace {
 constexpr double kArmSettledThresholdRad = 0.05;  // ~2.9 deg
+constexpr auto kArmSettleCommandWait = std::chrono::milliseconds(1000);
 constexpr auto kGripperPollPeriod = std::chrono::milliseconds(50);
 constexpr auto kStaleDoneGrace = std::chrono::milliseconds(300);
 constexpr auto kServoRestartMargin = std::chrono::milliseconds(4000);
@@ -317,9 +318,18 @@ hardware_interface::return_type FairinoDualHardwareInterface::write(const rclcpp
     }
 
     const RuntimeMode mode = _runtime_mode.load();
-    if (mode != RuntimeMode::SERVO_ACTIVE || gripper_pending_active()) {
+    if (mode != RuntimeMode::SERVO_ACTIVE) {
         process_pending_gripper();
         return hardware_interface::return_type::OK;
+    }
+    if (gripper_pending_active()) {
+        // FollowJointTrajectory may complete before hardware feedback reaches
+        // the bridge's existing 0.05 rad safety threshold.  Re-check the
+        // pending request without pausing ServoJ, so feedback can converge.
+        process_pending_gripper();
+        if (_runtime_mode.load() != RuntimeMode::SERVO_ACTIVE) {
+            return hardware_interface::return_type::OK;
+        }
     }
 
     if(_control_mode == 0){//位置控制模式
@@ -427,6 +437,7 @@ void FairinoDualHardwareInterface::handle_gripper(
     pending->rot_num = request->rot_num;
     pending->rot_vel = request->rot_vel;
     pending->rot_torque = request->rot_torque;
+    pending->arm_settle_deadline = std::chrono::steady_clock::now() + kArmSettleCommandWait;
 
     {
         std::lock_guard<std::mutex> lock(_gripper_mutex);
@@ -589,12 +600,27 @@ void FairinoDualHardwareInterface::begin_gripper_command(
     }
 
     if (max_err > kArmSettledThresholdRad) {
-        RCLCPP_WARN(
+        const auto now = std::chrono::steady_clock::now();
+        if (now < cmd->arm_settle_deadline) {
+            if (!cmd->arm_settle_wait_logged) {
+                cmd->arm_settle_wait_logged = true;
+                const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    cmd->arm_settle_deadline - now).count();
+                RCLCPP_INFO(
+                    rclcpp::get_logger("FairinoDualHardwareInterface"),
+                    "[GRIPPER ARBITER] READY_WAIT command_state_error=%.6f rad "
+                    "threshold=%.6f rad timeout_remaining_ms=%ld; ServoJ continues",
+                    max_err, kArmSettledThresholdRad, static_cast<long>(remaining));
+            }
+            return;
+        }
+        RCLCPP_ERROR(
             rclcpp::get_logger("FairinoDualHardwareInterface"),
-            "[GRIPPER ARBITER] arm not settled, reject gripper command"
+            "[GRIPPER ARBITER] READY_WAIT_TIMEOUT command_state_error=%.6f rad "
+            "threshold=%.6f rad; gripper command rejected",
+            max_err, kArmSettledThresholdRad
         );
-        finish_gripper_pending(
-            -1, "arm command not settled; gripper command rejected");
+        finish_gripper_pending(-1, "arm command did not settle before gripper command timeout");
         _runtime_mode.store(RuntimeMode::SERVO_ACTIVE);
         return;
     }

@@ -42,7 +42,7 @@ from go_world_tcp import WorldTcpGo, distance, fmt, position, read_real_backend
 # Edit the shared midpoint here (world coordinates, METRES).
 TARGET = (0.0, 0.3, 1.1)
 # 30 mm between TCP origins along world X; not the free gap between fingers.
-GAP = 0.030
+GAP = 0.010
 ROOT_HALF = math.sqrt(0.5)
 QUATERNION = {
     "a": (0.0, -ROOT_HALF, 0.0, ROOT_HALF),
@@ -359,7 +359,7 @@ def main() -> int:
     parser.add_argument("--max-tf-age", type=float, default=1.5)
     args = parser.parse_args()
 
-    if not all(math.isfinite(v) for v in (*TARGET, GAP)) or not 0.03 <= GAP <= 0.50:
+    if not all(math.isfinite(v) for v in (*TARGET, GAP)) or not 0.01 <= GAP <= 0.50:
         parser.error("TARGET must be finite; GAP must be 0.03..0.50 m")
     if not 0 < args.velocity_scale <= 0.2 or not 0 < args.acceleration_scale <= 0.2:
         parser.error("velocity/acceleration scale must be in (0, 0.2]")
