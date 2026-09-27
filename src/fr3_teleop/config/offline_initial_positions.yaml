@@ -1,0 +1,19 @@
+# Only for teleop_servo_offline_test.launch.py.  It deliberately does not
+# alter fairino3_dual_moveit_config/config/initial_positions.yaml or real
+# hardware state.  The six-axis pose is the existing fr_control task home,
+# selected to avoid the all-zero wrist singularity in GenericSystem.
+initial_positions:
+  arm_a_j1: 2.4468
+  arm_a_j2: -1.6214
+  arm_a_j3: 1.5465
+  arm_a_j4: -1.5877
+  arm_a_j5: -1.6368
+  arm_a_j6: 0.0
+  arm_a_gripper_joint: 0.0
+  arm_b_j1: 2.4468
+  arm_b_j2: -1.6214
+  arm_b_j3: 1.5465
+  arm_b_j4: -1.5877
+  arm_b_j5: -1.6368
+  arm_b_j6: 0.0
+  arm_b_gripper_joint: 0.0

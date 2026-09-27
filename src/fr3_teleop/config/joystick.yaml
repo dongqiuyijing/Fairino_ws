@@ -1,0 +1,37 @@
+# Measured on this machine from the connected pad, not from a generic layout chart.
+#
+# USB: 045e:028e Microsoft X-Box 360 pad
+# SDL / joy_node name: "Xbox 360 Controller"  (/dev/input/js0, event7)
+# Live sensor_msgs/Joy at rest (joy_node deadzone 0):
+#   axes[0]=0  axes[1]≈0  axes[2]=+1  axes[3]=0
+#   axes[4]≈0  axes[5]=+1  axes[6]=0  axes[7]=0
+#   11 buttons, all 0
+# Kernel js0 rest: axes 2 and 5 = -32767, every other axis 0.
+# Same indices, opposite trigger sign → joy_node publishes negated axes.
+# Physical /joy signs measured 2026-09-27 (full deflection):
+#   left/right stick right = -1, left = +1
+#   left/right stick up = +1, down = -1
+# invert is set so stick-right and stick-up are positive motion.
+# Triggers rest at Joy +1 and are intentionally unmapped.
+# Idle stick noise on /joy was 3.1e-5. Kernel flat is 128/32767 ≈ 0.0039.
+# deadzone 0.02 sits above both.
+joystick:
+  joy_topic: /joy
+  command_topic: /fr3_teleop/command
+  status_topic: /fr3_teleop/status
+  deadzone: 0.02
+  joy_timeout_ms: 200
+  publish_rate_hz: 20
+  axes:
+    linear_x: {index: 0, invert: true}   # left stick X; physical right is Joy -1
+    linear_y: {index: 1, invert: false}  # left stick Y; physical up is Joy +1
+    linear_z: {index: 4, invert: false}  # right stick Y; physical up is Joy +1
+    angular_x: {index: 0, invert: true}  # left stick X while LB held
+    angular_y: {index: 1, invert: false} # left stick Y while LB held
+    angular_z: {index: 3, invert: true}  # right stick X while LB held; physical right is Joy -1
+  buttons:
+    deadman: 5          # RB, evdev BTN_TR
+    rotation_mode: 4    # LB, evdev BTN_TL, hold to rotate
+    arm_a: 0            # A, evdev BTN_A
+    arm_b: 1            # B, evdev BTN_B
+    stop: 6             # Back / Select, evdev BTN_SELECT

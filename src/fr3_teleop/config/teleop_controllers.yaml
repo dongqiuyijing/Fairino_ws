@@ -1,0 +1,18 @@
+# Load with controller_manager/spawner -p. These controllers deliberately
+# claim the same position interfaces as the auto controllers, therefore only
+# one of each pair may be active. Do not add them to the normal bringup.
+# The controller is loaded either below the real controller_manager namespace
+# or below /fr3_teleop_offline.  The Humble spawner selects this entry before
+# configure and ROS applies it to the concrete controller node.
+/**/arm_a_teleop_controller:
+  ros__parameters:
+    joints: [arm_a_j1, arm_a_j2, arm_a_j3, arm_a_j4, arm_a_j5, arm_a_j6]
+    command_interfaces: [position]
+    state_interfaces: [position]
+    allow_partial_joints_goal: false
+/**/arm_b_teleop_controller:
+  ros__parameters:
+    joints: [arm_b_j1, arm_b_j2, arm_b_j3, arm_b_j4, arm_b_j5, arm_b_j6]
+    command_interfaces: [position]
+    state_interfaces: [position]
+    allow_partial_joints_goal: false

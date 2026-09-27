@@ -1,0 +1,9 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 125
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    arm_a_teleop_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+    arm_b_teleop_controller:
+      type: joint_trajectory_controller/JointTrajectoryController

@@ -1,0 +1,62 @@
+# Safe default: this package never opens a Fairino SDK connection.
+# "real" is deliberately rejected until an in-process arbiter is implemented
+# in fairino_hardware_dual; see README.md.
+robots:
+  arm_a:
+    enabled: true
+    display_name: Arm A
+    base_frame: arm_a_base_link
+    tcp_frame: arm_a_gripper_tcp
+    joint_prefix: arm_a_
+    auto_controller: arm_a_controller
+    teleop_controller: arm_a_teleop_controller
+    gripper_service: /arm_a/fairino_gripper/command
+    gripper_open_position: 0
+    gripper_close_position: 85
+  arm_b:
+    enabled: true
+    display_name: Arm B
+    base_frame: arm_b_base_link
+    tcp_frame: arm_b_gripper_tcp
+    joint_prefix: arm_b_
+    auto_controller: arm_b_controller
+    teleop_controller: arm_b_teleop_controller
+    gripper_service: /arm_b/fairino_gripper/command
+    gripper_open_position: 0
+    gripper_close_position: 85
+
+teleop:
+  backend: mock                 # only supported backend in this revision
+  default_arm: arm_a
+  default_frame: world
+  linear_speed_mm_s: 5.0
+  angular_speed_deg_s: 2.0
+  max_linear_speed_mm_s: 20.0
+  max_angular_speed_deg_s: 10.0
+  input_rate_hz: 20
+  input_timeout_ms: 250
+  allow_simultaneous_control: false
+  start_with_control_disabled: true
+  require_manual_mode: true
+  # Must remain false on a real cell until controller-manager switching is
+  # explicitly verified. The normal launch always uses mock.
+  allow_servo_motion_output: false
+  allow_real_motion: false
+  first_real_test_mode: true
+  allow_real_gripper_service: false
+  max_initial_joint_error_rad: 0.02
+  initial_hold_duration_s: 0.20
+  stop_on_focus_lost: true
+  stop_on_robot_switch: true
+  stop_on_frame_switch: true
+
+safety:
+  require_fresh_robot_state: true
+  robot_state_timeout_ms: 500
+  stop_on_backend_error: true
+  stop_on_input_timeout: true
+  stop_on_connection_loss: true
+  auto_idle_settle_s: 0.5
+  auto_idle_desired_error_rad: 0.01
+  auto_idle_stationary_delta_rad: 0.001
+  known_task_executor_nodes: [dual7_real_task_executor, fr3_real_frozen_trajectory_executor]
