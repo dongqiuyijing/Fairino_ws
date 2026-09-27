@@ -123,7 +123,7 @@ class TeleopWindow(QMainWindow):
         speed_box = QGroupBox("Speed limits")
         speed_layout = QFormLayout(speed_box)
         self.linear = QDoubleSpinBox()
-        self.linear.setRange(0.1, 20.0)
+        self.linear.setRange(0.1, 40.0)
         self.linear.setValue(5.0)
         self.linear.setSuffix(" mm/s")
         self.angular = QDoubleSpinBox()
@@ -345,10 +345,10 @@ class TeleopWindow(QMainWindow):
             self._arm_buttons["arm_b"].setEnabled(False)
             for index in range(self.frame.count()):
                 self.frame.model().item(index).setEnabled(self.frame.itemText(index) == "base")
-            self.linear.setMaximum(10.0)
-            if self.linear.value() > 10.0:
+            self.linear.setMaximum(40.0)
+            if self.linear.value() > 40.0:
                 blocker = QSignalBlocker(self.linear)
-                self.linear.setValue(10.0)
+                self.linear.setValue(40.0)
                 del blocker
             self.angular.setEnabled(False)
             for button in self._gripper_buttons:

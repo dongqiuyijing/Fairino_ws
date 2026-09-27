@@ -31,7 +31,7 @@ teleop:
   default_frame: world
   linear_speed_mm_s: 5.0
   angular_speed_deg_s: 2.0
-  max_linear_speed_mm_s: 20.0
+  max_linear_speed_mm_s: 60.0
   max_angular_speed_deg_s: 10.0
   input_rate_hz: 20
   input_timeout_ms: 250
@@ -42,8 +42,8 @@ teleop:
   # explicitly verified. The normal launch always uses mock.
   allow_servo_motion_output: false
   allow_real_motion: false
-  first_real_test_mode: true
-  allow_real_gripper_service: false
+  first_real_test_mode: false #true
+  allow_real_gripper_service: true #false
   max_initial_joint_error_rad: 0.02
   initial_hold_duration_s: 0.20
   velocity_integrator:
