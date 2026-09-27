@@ -46,6 +46,12 @@ teleop:
   allow_real_gripper_service: false
   max_initial_joint_error_rad: 0.02
   initial_hold_duration_s: 0.20
+  velocity_integrator:
+    output_rate_hz: 125.0
+    raw_velocity_timeout_s: 0.12
+    max_lead_rad: 0.02
+    max_timer_dt_s: 0.02
+    max_raw_joint_velocity_rad_s: 3.0
   stop_on_focus_lost: true
   stop_on_robot_switch: true
   stop_on_frame_switch: true

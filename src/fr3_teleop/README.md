@@ -4,20 +4,23 @@ This independent ROS 2 package supplies a working desktop GUI, exclusive input
 manager, watchdog, and mock backend. It does **not** send a robot motion in the
 shipped configuration.
 
-## Why the real backend is intentionally blocked
+## Real backend boundary
 
 The live dual hardware plugin (`fairino_hardware_dual`) opens one `FRRobot` per
 arm, calls `ServoMoveStart()` on activation, and calls `ServoJ()` from its
 125 Hz `write()` loop.  The installed SDK does expose `StartJOG`, `StopJOG`,
 and `ImmStopJOG`, but a second SDK client would compete with that active servo
-session.  This package therefore refuses `teleop.backend: real`; it never
-opens an SDK connection and never attempts a controller switch.
+session.  This package never opens an SDK connection: manual motion remains on
+the existing ros2_control position-command path and is enabled only after the
+manager has completed the existing strict controller-ownership and initial-hold
+checks.
 
 MoveIt Servo 2.5.9 is installed locally and supports
-`trajectory_msgs/JointTrajectory` output. That is compatible with the existing
-position-only `joint_trajectory_controller`: Servo emits joint positions and
-the controller continues to feed the existing hardware plugin's ServoJ loop.
-No velocity hardware interface is needed.
+`std_msgs/Float64MultiArray` output. The real teleop path receives six safe
+joint velocities from Servo, integrates them into bounded position commands at
+125 Hz, and sends those commands through
+`position_controllers/JointGroupPositionController`; the existing automatic controllers remain position-only
+`joint_trajectory_controller` instances.
 
 ## Build and mock launch
 
@@ -51,19 +54,21 @@ displayed in `world`, selected `base`, or selected `tool` frame. The overlay
 hardware plugin does not publish `RobotNonrtState`; fault status is therefore
 explicitly `UNKNOWN`, rather than inferred from joint-state traffic.
 
-## Servo staging, not real motion
+## Servo output staging
 
-`teleop_servo.launch.py` starts independent Arm A/B Servo nodes and sends their
-output only to `/arm_[ab]_teleop_controller/joint_trajectory`. It starts no
-controller and performs no controller switch. It is safe to inspect with an
-existing bringup because the output has no active subscriber by default:
+`teleop_servo.launch.py` starts independent Arm A/B Servo nodes. Their raw
+`Float64MultiArray` joint velocities are published under
+`/fr3_teleop/arm_[ab]/servo_raw_commands`; the manager is the sole publisher
+to `/arm_[ab]_teleop_controller/commands`, where it emits bounded, integrated
+joint positions at 125 Hz. It does not automatically switch controllers:
 
 ```bash
 ros2 launch fr3_teleop teleop_servo.launch.py
 ```
 
-`teleop_controllers.yaml` defines separate position JTCs that claim the same
-joints as `arm_a_controller` and `arm_b_controller`. They must be loaded
+`teleop_controllers.yaml` defines separate
+`JointGroupPositionController` instances that claim the same joints as
+`arm_a_controller` and `arm_b_controller`. They must be loaded
 inactive with `controller_manager/spawner -p`; a strict controller-manager
 switch is required before Servo output could reach hardware. `ControllerLease`
 implements and tests the required rule: reject a manual request while an auto
@@ -74,9 +79,5 @@ The existing gripper bridge is implemented in `GripperBridgeClient`. It sends
 only `fairino_msgs/srv/GripperBridge` requests to the configured existing
 service. `allow_real_gripper_service` remains false by default.
 
-## Required next implementation before real use
-
-Complete the controller-manager service adapter and action-status monitor in
-the manager, then perform a fully isolated mock Servo-output probe before any
-real switch. A real deployment must prove strict switch behavior, halt latency,
-fresh state, scene contents, and low-speed motion under supervised conditions.
+Real use still requires the explicit controller-manager manual request,
+fresh-state/TF checks, initial hold, and a supervised low-speed cell test.

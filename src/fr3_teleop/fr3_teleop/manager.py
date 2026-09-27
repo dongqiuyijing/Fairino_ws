@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from math import pi
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from ament_index_python.packages import get_package_share_directory
@@ -13,7 +14,7 @@ from rclpy.node import Node
 from rclpy.duration import Duration
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import TwistStamped
-from std_msgs.msg import String
+from std_msgs.msg import Float64MultiArray, Int8, String
 from tf2_ros import Buffer, TransformListener, TransformException
 import yaml
 
@@ -22,6 +23,7 @@ from .controller_manager_client import AutoTrajectoryMonitor, ControllerManagerC
 from .gripper_bridge import GripperBridgeClient
 from .initial_hold import InitialHoldGate
 from .robot_state import FeedbackCache
+from .servo_position_accumulator import ServoVelocityIntegrator, VelocityIntegratorConfig
 
 
 def load_config(path: str = "") -> dict[str, Any]:
@@ -66,7 +68,13 @@ class TeleopManager(Node):
         self._auto_monitor: AutoTrajectoryMonitor | None = None
         self._controller_client: ControllerManagerClient | None = None
         self._hold_gates: dict[str, InitialHoldGate] = {}
-        self._hold_publishers: dict[str, Any] = {}
+        # This manager owns the only final JGPC publisher.  MoveIt Servo writes
+        # exclusively to raw topics; no direct Servo publisher can race this.
+        self._command_publishers: dict[str, Any] = {}
+        self._integrators: dict[str, ServoVelocityIntegrator] = {}
+        self._servo_status: dict[str, int] = {}
+        self._hold_started: dict[str, float] = {}
+        self._hold_timers: dict[str, Any] = {}
         if backend_name == "servo":
             safety = config["safety"]
             self._auto_monitor = AutoTrajectoryMonitor(self, config["robots"],
@@ -75,6 +83,13 @@ class TeleopManager(Node):
                 stationary_delta_rad=float(safety["auto_idle_stationary_delta_rad"]),
                 task_nodes=tuple(safety["known_task_executor_nodes"]))
             self._controller_client = ControllerManagerClient(self, config["robots"], self._auto_monitor)
+            velocity_cfg = config["teleop"]["velocity_integrator"]
+            integrator_cfg = VelocityIntegratorConfig(
+                max_lead_rad=float(velocity_cfg["max_lead_rad"]),
+                max_raw_joint_velocity_rad_s=float(velocity_cfg["max_raw_joint_velocity_rad_s"]),
+                raw_velocity_timeout_s=float(velocity_cfg["raw_velocity_timeout_s"]),
+                max_timer_dt_s=float(velocity_cfg["max_timer_dt_s"]),
+            )
             for arm, spec in config["robots"].items():
                 joints = [f"{spec['joint_prefix']}j{i}" for i in range(1, 7)]
                 self._hold_gates[arm] = InitialHoldGate(
@@ -82,14 +97,20 @@ class TeleopManager(Node):
                     float(config["teleop"]["max_initial_joint_error_rad"]),
                     float(config["teleop"]["initial_hold_duration_s"]),
                 )
-                self._hold_publishers[arm] = self.create_publisher(
-                    __import__("trajectory_msgs.msg", fromlist=["JointTrajectory"]).JointTrajectory,
-                    f"/{spec['teleop_controller']}/joint_trajectory", 10,
+                self._command_publishers[arm] = self.create_publisher(
+                    Float64MultiArray,
+                    f"/{spec['teleop_controller']}/commands", 10,
+                )
+                self._integrators[arm] = ServoVelocityIntegrator(integrator_cfg)
+                self.create_subscription(
+                    Float64MultiArray,
+                    f"/fr3_teleop/{arm}/servo_raw_commands",
+                    lambda msg, key=arm: self._on_servo_raw(key, msg), 50,
                 )
                 self.create_subscription(
-                    __import__("control_msgs.msg", fromlist=["JointTrajectoryControllerState"]).JointTrajectoryControllerState,
-                    f"/{spec['teleop_controller']}/controller_state",
-                    lambda msg, key=arm: self._on_controller_state(key, msg), 20,
+                    Int8,
+                    f"/fr3_teleop/{arm}/servo_status",
+                    lambda msg, key=arm: self._on_servo_status(key, msg), 20,
                 )
                 self.create_subscription(
                     __import__("control_msgs.msg", fromlist=["JointTrajectoryControllerState"]).JointTrajectoryControllerState,
@@ -106,6 +127,7 @@ class TeleopManager(Node):
         self._status_pub = self.create_publisher(String, "/fr3_teleop/status", 20)
         rate = float(config["teleop"]["input_rate_hz"])
         self.create_timer(1.0 / rate, self._tick)
+        self.create_timer(1.0 / float(config["teleop"]["velocity_integrator"]["output_rate_hz"]), self._command_tick)
         self.get_logger().info(
             f"fr3_teleop manager started backend={backend_name}; "
             f"Servo nonzero output={'ENABLED' if self._servo_motion_allowed else 'DISABLED'}"
@@ -116,6 +138,10 @@ class TeleopManager(Node):
             data = json.loads(msg.data)
             if not isinstance(data, dict):
                 raise ValueError("JSON command must be an object")
+            # These commands must immediately discard any lead accumulated from
+            # a preceding held button, before ControlCore emits its zero Twist.
+            if data.get("type") in {"stop", "release", "select_arm", "set_frame", "set_speed"}:
+                self._hold_integrator(self.core.arm, str(data.get("type")))
             if data.get("type") == "enable" and self.config["teleop"].get("backend") == "servo":
                 self._handle_enable(data)
             elif data.get("type") == "motion":
@@ -125,6 +151,8 @@ class TeleopManager(Node):
                     if not (self.core.arm == "arm_a" and self.core.frame == "base" and data.get("axis") == "x" and int(data.get("sign", 0)) == 1):
                         raise ValueError("first_real_test_mode only permits Arm A / base / X+")
                 self.core.command(data)
+                if self.config["teleop"].get("backend") == "servo":
+                    self._integrators[self.core.arm].begin_motion(monotonic())
             elif data.get("type") == "gripper" and self._grippers:
                 self._handle_gripper(data)
             else:
@@ -135,6 +163,60 @@ class TeleopManager(Node):
             self.core._stop("invalid-command")
             self.core.fault = str(exc)
             self.get_logger().error(f"teleop command rejected: {exc}")
+
+    def _measured_for_arm(self, arm: str) -> list[float] | None:
+        values = self._feedback.status(
+            arm, float(self.config["safety"]["robot_state_timeout_ms"]) / 1000.0
+        )["joint_positions_rad"]
+        names = [f"{self.config['robots'][arm]['joint_prefix']}j{i}" for i in range(1, 7)]
+        try:
+            result = [float(values[name]) for name in names]
+        except (KeyError, TypeError, ValueError):
+            return None
+        return result if len(result) == 6 else None
+
+    def _publish_command(self, arm: str, values: tuple[float, ...] | list[float]) -> None:
+        publisher = self._command_publishers.get(arm)
+        if publisher is not None:
+            publisher.publish(Float64MultiArray(data=list(values)))
+
+    def _hold_integrator(self, arm: str, event: str) -> None:
+        integrator = self._integrators.get(arm)
+        measured = self._measured_for_arm(arm)
+        if integrator is not None and measured is not None:
+            self._publish_command(arm, integrator.enter_fixed_hold(measured, monotonic(), event))
+
+    def _on_servo_status(self, arm: str, msg: Int8) -> None:
+        self._servo_status[arm] = int(msg.data)
+        # Humble status codes: 2 singularity halt, 4 collision halt, 5 joint bound.
+        if int(msg.data) in {2, 4, 5}:
+            self._hold_integrator(arm, "servo-safety-halt")
+            if arm == self.core.arm and self._manual_transition == "MANUAL_READY":
+                self._manual_ready = False
+                self.core.command({"type": "stop", "reason": "servo-safety-halt", "keep_claim": True})
+                self._manual_transition = "FAULT"
+                self.core.fault = f"MoveIt Servo safety halt status={int(msg.data)}"
+
+    def _on_servo_raw(self, arm: str, msg: Float64MultiArray) -> None:
+        """Consume only raw Servo output; final JGPC output remains manager-owned."""
+        if (not self._servo_motion_allowed or arm != self.core.arm or
+                self._manual_transition != "MANUAL_READY" or self.core.active is None):
+            return
+        measured = self._measured_for_arm(arm)
+        if measured is None:
+            self._integrator_fault(arm, "joint state unavailable while accepting Servo raw velocity")
+            return
+        error = self._integrators[arm].accept_velocity(msg.data, monotonic())
+        if error:
+            self._integrator_fault(arm, error)
+
+    def _integrator_fault(self, arm: str, reason: str) -> None:
+        self._hold_integrator(arm, "fault")
+        if arm == self.core.arm:
+            self._manual_ready = False
+            self.core.command({"type": "stop", "reason": "velocity-integrator-fault", "keep_claim": True})
+            self._manual_transition = "FAULT"
+            self.core.fault = reason
 
     def _on_joint_state(self, msg: JointState) -> None:
         self._feedback.update_joints(list(msg.name), list(msg.position))
@@ -149,6 +231,8 @@ class TeleopManager(Node):
         """Acquire/release controller ownership; no nonzero output is implied."""
         requested = bool(data.get("value", False))
         if not requested:
+            self._cancel_hold(self.core.arm)
+            self._hold_integrator(self.core.arm, "manual-release")
             self.core.command({"type": "stop", "reason": "manual-release", "source": data.get("source", "")})
             self.core.command({"type": "enable", "value": False, "source": data.get("source", "")})
             self._manual_ready, self._manual_transition = False, "RELEASING"
@@ -171,26 +255,69 @@ class TeleopManager(Node):
         try:
             gate = self._hold_gates[self.core.arm]
             hold = gate.build_hold(status["joint_positions_rad"])
-            self._hold_publishers[self.core.arm].publish(hold)
         except (KeyError, ValueError) as error:
             self._manual_transition = "FAULT"; self.core.fault = f"initial hold failed: {error}"; return
         self._manual_transition = "HOLD_PENDING"
+        arm = self.core.arm
+        self._hold_started[arm] = monotonic()
+        self._integrators[arm].reset_to_measured(hold.data, self._hold_started[arm], "initial-hold")
+        period = min(0.02, float(self.config["teleop"]["initial_hold_duration_s"]))
+        self._hold_timers[arm] = self.create_timer(max(period, 0.001), lambda key=arm: self._continue_hold(key))
 
-    def _on_controller_state(self, arm: str, msg: Any) -> None:
+    def _continue_hold(self, arm: str) -> None:
         if arm != self.core.arm or self._manual_transition != "HOLD_PENDING":
+            self._cancel_hold(arm)
             return
-        if self._hold_gates[arm].verify_desired(list(msg.joint_names), list(msg.desired.positions)):
+        gate = self._hold_gates[arm]
+        if monotonic() - self._hold_started[arm] < gate.hold_s:
+            return
+        self._cancel_hold(arm)
+        status = self._feedback.status(arm, float(self.config["safety"]["robot_state_timeout_ms"]) / 1000.0)
+        if status["joint_feedback"] != "ONLINE":
+            self._manual_transition = "FAULT"; self.core.fault = "joint state stale during initial hold"; return
+        if gate.verify_measured(status["joint_positions_rad"]):
             self._manual_ready, self._manual_transition = True, "MANUAL_READY"
             self._record_switch_q_jump(arm)
             self.core.command({"type": "enable", "value": True})
         else:
-            self._manual_transition = "FAULT"; self.core.fault = "initial hold desired/measured error exceeds limit"
+            self._manual_transition = "FAULT"; self.core.fault = "initial hold measured error exceeds limit"
+
+    def _cancel_hold(self, arm: str) -> None:
+        timer = self._hold_timers.pop(arm, None)
+        self._hold_started.pop(arm, None)
+        if timer is not None:
+            timer.cancel()
+            self.destroy_timer(timer)
 
     def _on_release_result(self, ok: bool, message: str) -> None:
         self._manual_transition = "AUTO" if ok else "FAULT"
         if ok:
             self._record_switch_q_jump(self.core.arm)
         if not ok: self.core.fault = message
+
+    def _command_tick(self) -> None:
+        """Emit final Float64 position commands at the 125 Hz ros2_control cadence."""
+        if self.config["teleop"].get("backend") != "servo":
+            return
+        arm = self.core.arm
+        if self._manual_transition not in {"HOLD_PENDING", "MANUAL_READY"}:
+            return
+        measured = self._measured_for_arm(arm)
+        if measured is None:
+            self._integrator_fault(arm, "joint state stale while publishing velocity-integrator command")
+            return
+        # Initial hold and every stopped state continuously command measured
+        # position.  Only an actively held GUI input permits integration.
+        motion_active = (
+            self._servo_motion_allowed and self._manual_transition == "MANUAL_READY"
+            and self.core.active is not None
+        )
+        try:
+            command = self._integrators[arm].tick(measured, monotonic(), motion_active)
+        except ValueError as error:
+            self._integrator_fault(arm, f"invalid measured joint state: {error}")
+            return
+        self._publish_command(arm, command)
 
     def _capture_switch_q(self, arm: str) -> None:
         values = self._feedback.status(arm, float(self.config["safety"]["robot_state_timeout_ms"]) / 1000.0)["joint_positions_rad"]
@@ -240,6 +367,12 @@ class TeleopManager(Node):
         status["auto_state"] = self._auto_monitor.state(self.core.arm) if self._auto_monitor else "MOCK"
         status["manual_ready"] = self._manual_ready
         status["servo_nonzero_output_enabled"] = self._servo_motion_allowed
+        status["servo_status"] = self._servo_status.get(self.core.arm, None)
+        integrator = self._integrators.get(self.core.arm)
+        if integrator is not None:
+            status["velocity_integrator_event"] = integrator.last_event
+            status["velocity_integrator_target_rad"] = integrator.target
+            status["velocity_integrator_hold_rad"] = integrator.stop_hold
         status["first_real_test_mode"] = bool(self.config["teleop"].get("first_real_test_mode", False))
         status["last_switch_max_q_jump_rad"] = self._last_switch_q_jump_rad[self.core.arm]
         status["fault_state"] = self.core.fault or feedback["fault_state"]

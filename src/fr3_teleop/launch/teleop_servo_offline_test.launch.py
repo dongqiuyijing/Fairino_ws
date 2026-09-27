@@ -62,9 +62,9 @@ def generate_launch_description():
     spawn_js = Node(package="controller_manager", executable="spawner", output="screen",
                     arguments=["joint_state_broadcaster", "-c", f"/{namespace}/controller_manager", "-t", "joint_state_broadcaster/JointStateBroadcaster"])
     spawn_a = Node(package="controller_manager", executable="spawner", output="screen",
-                   arguments=["arm_a_teleop_controller", "-c", f"/{namespace}/controller_manager", "-t", "joint_trajectory_controller/JointTrajectoryController", "-p", os.path.join(teleop, "config", "teleop_controllers.yaml"), "--inactive"])
+                   arguments=["arm_a_teleop_controller", "-c", f"/{namespace}/controller_manager", "-t", "position_controllers/JointGroupPositionController", "-p", os.path.join(teleop, "config", "teleop_controllers.yaml"), "--inactive"])
     spawn_b = Node(package="controller_manager", executable="spawner", output="screen",
-                   arguments=["arm_b_teleop_controller", "-c", f"/{namespace}/controller_manager", "-t", "joint_trajectory_controller/JointTrajectoryController", "-p", os.path.join(teleop, "config", "teleop_controllers.yaml"), "--inactive"])
+                   arguments=["arm_b_teleop_controller", "-c", f"/{namespace}/controller_manager", "-t", "position_controllers/JointGroupPositionController", "-p", os.path.join(teleop, "config", "teleop_controllers.yaml"), "--inactive"])
     common = [moveit.robot_description, moveit.robot_description_semantic,
               moveit.robot_description_kinematics, moveit.joint_limits]
     servo_a_cfg = _yaml(os.path.join(teleop, "config", "servo_arm_a.yaml"))["moveit_servo"]
@@ -75,7 +75,7 @@ def generate_launch_description():
     servo_a_cfg["is_primary_planning_scene_monitor"] = True
     servo_b_cfg["is_primary_planning_scene_monitor"] = False
     for arm, cfg in (("arm_a", servo_a_cfg), ("arm_b", servo_b_cfg)):
-        cfg.update({"joint_topic": f"/{namespace}/joint_states", "cartesian_command_in_topic": f"/{namespace}/{arm}/delta_twist_cmds", "status_topic": f"/{namespace}/{arm}/servo_status", "command_out_topic": f"/{namespace}/{arm}_teleop_controller/joint_trajectory"})
+        cfg.update({"joint_topic": f"/{namespace}/joint_states", "cartesian_command_in_topic": f"/{namespace}/{arm}/delta_twist_cmds", "status_topic": f"/{namespace}/{arm}/servo_status", "command_out_topic": f"/{namespace}/{arm}/servo_raw_commands"})
     servo_a = Node(package="moveit_servo", executable="servo_node_main", namespace=namespace, name="offline_arm_a_servo", output="screen",
                    parameters=[{"moveit_servo": servo_a_cfg}, *common])
     servo_b = Node(package="moveit_servo", executable="servo_node_main", namespace=namespace, name="offline_arm_b_servo", output="screen",

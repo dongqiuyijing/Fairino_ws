@@ -73,11 +73,11 @@ def generate_launch_description():
         TimerAction(period=1.0, actions=[
             Node(package="controller_manager", executable="spawner", output="screen",
                  arguments=["arm_a_teleop_controller", "-c", "/controller_manager",
-                            "-t", "joint_trajectory_controller/JointTrajectoryController",
+                            "-t", "position_controllers/JointGroupPositionController",
                             "-p", controller_params, "--inactive"]),
             Node(package="controller_manager", executable="spawner", output="screen",
                  arguments=["arm_b_teleop_controller", "-c", "/controller_manager",
-                            "-t", "joint_trajectory_controller/JointTrajectoryController",
+                            "-t", "position_controllers/JointGroupPositionController",
                             "-p", controller_params, "--inactive"]),
         ]),
         Node(package="moveit_servo", executable="servo_node_main", name="arm_a_servo", output="screen",

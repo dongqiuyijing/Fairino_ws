@@ -3,8 +3,8 @@ moveit_servo:
   command_in_type: speed_units
   publish_period: 0.04
   low_latency_mode: false
-  command_out_type: trajectory_msgs/JointTrajectory
-  publish_joint_positions: true
+  command_out_type: std_msgs/Float64MultiArray
+  publish_joint_positions: false
   publish_joint_velocities: true
   publish_joint_accelerations: false
   smoothing_filter_plugin_name: online_signal_smoothing::ButterworthFilterPlugin
@@ -28,4 +28,6 @@ moveit_servo:
   joint_command_in_topic: /fr3_teleop/arm_a/delta_joint_cmds
   joint_topic: /joint_states
   status_topic: /fr3_teleop/arm_a/servo_status
-  command_out_topic: /arm_a_teleop_controller/joint_trajectory
+  # Raw safe joint velocities [rad/s]. fr3_teleop_manager is the only
+  # publisher to the JointGroupPositionController position-command topic.
+  command_out_topic: /fr3_teleop/arm_a/servo_raw_commands

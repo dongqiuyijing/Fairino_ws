@@ -345,10 +345,10 @@ class TeleopWindow(QMainWindow):
             self._arm_buttons["arm_b"].setEnabled(False)
             for index in range(self.frame.count()):
                 self.frame.model().item(index).setEnabled(self.frame.itemText(index) == "base")
-            self.linear.setMaximum(2.0)
-            if self.linear.value() > 2.0:
+            self.linear.setMaximum(10.0)
+            if self.linear.value() > 10.0:
                 blocker = QSignalBlocker(self.linear)
-                self.linear.setValue(2.0)
+                self.linear.setValue(10.0)
                 del blocker
             self.angular.setEnabled(False)
             for button in self._gripper_buttons:
