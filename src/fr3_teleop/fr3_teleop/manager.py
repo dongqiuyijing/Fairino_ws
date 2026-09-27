@@ -251,12 +251,65 @@ class TeleopManager(Node):
             assert self._controller_client is not None
             self._controller_client.release_manual(self.core.arm, self._on_release_result)
             return
+        if self._manual_transition == "FAULT":
+            self._begin_fault_recovery()
+            return
         if self._manual_transition not in {"AUTO", "DENIED"}:
-            raise ValueError(f"manual request unavailable while state={self._manual_transition}")
+            self.get_logger().warning(f"manual request ignored while state={self._manual_transition}")
+            return
+        self._request_manual_from_auto(self._on_manual_switch)
+
+    def _request_manual_from_auto(self, callback) -> None:
+        """Run the existing strict AUTO -> MANUAL request path."""
         self._capture_switch_q(self.core.arm)
         self._manual_ready, self._manual_transition = False, "REQUESTING"
         assert self._controller_client is not None
-        self._controller_client.request_manual(self.core.arm, self._on_manual_switch)
+        self._controller_client.request_manual(self.core.arm, callback)
+
+    def _begin_fault_recovery(self) -> None:
+        """Return a faulted teleop pair to AUTO before requesting MANUAL again."""
+        arm = self.core.arm
+        self._manual_ready = False
+        self._cancel_hold(arm)
+        self._hold_integrator(arm, "fault-recovery")
+        self.core.command({"type": "stop", "reason": "fault-recovery", "keep_claim": True})
+        self._manual_transition = "RECOVERY_CHECKING_AUTO"
+        assert self._controller_client is not None
+        if not self._controller_client.get_controller_state(arm, self._on_fault_recovery_pair_state):
+            self._fault_recovery_failed("controller_manager state query unavailable")
+
+    def _on_fault_recovery_pair_state(self, state: str) -> None:
+        """Release TELEOP only when it is confirmed active; AUTO is already safe."""
+        arm = self.core.arm
+        if state == "AUTO":
+            self._on_fault_recovery_auto(True, "automatic controller already active")
+            return
+        if state != "MANUAL":
+            self._fault_recovery_failed(f"controller pair is not safely recoverable: {state}")
+            return
+        self._manual_transition = "RECOVERY_RELEASING"
+        assert self._controller_client is not None
+        if not self._controller_client.release_manual(arm, self._on_fault_recovery_auto):
+            self._fault_recovery_failed("controller_manager AUTO restore request unavailable")
+
+    def _on_fault_recovery_auto(self, ok: bool, message: str) -> None:
+        if not ok:
+            self._fault_recovery_failed(f"controller AUTO restore failed: {message}")
+            return
+        # Do not clear core.fault yet: it remains visible until the normal
+        # strict request and Initial Hold have succeeded.
+        self._request_manual_from_auto(self._on_fault_recovery_manual_switch)
+
+    def _on_fault_recovery_manual_switch(self, ok: bool, message: str) -> None:
+        if not ok:
+            self._fault_recovery_failed(f"controller MANUAL request failed: {message}")
+            return
+        self._on_manual_switch(ok, message)
+
+    def _fault_recovery_failed(self, reason: str) -> None:
+        self._manual_ready = False
+        self._manual_transition = "FAULT"
+        self.core.fault = reason
 
     def _on_manual_switch(self, ok: bool, message: str) -> None:
         if not ok:
@@ -290,6 +343,7 @@ class TeleopManager(Node):
         if gate.verify_measured(status["joint_positions_rad"]):
             self._manual_ready, self._manual_transition = True, "MANUAL_READY"
             self._record_switch_q_jump(arm)
+            self.core.fault = ""
             self.core.command({"type": "enable", "value": True})
         else:
             self._manual_transition = "FAULT"; self.core.fault = "initial hold measured error exceeds limit"
@@ -417,6 +471,8 @@ class TeleopManager(Node):
             status["velocity_integrator_fault_latched"] = integrator.fault_latched
             status["velocity_integrator_target_rad"] = integrator.target
             status["velocity_integrator_hold_rad"] = integrator.stop_hold
+            status["velocity_integrator_lead_scale"] = integrator.last_lead_scale
+            status["velocity_integrator_lead_reprojection_scale"] = integrator.last_lead_reprojection_scale
         status["first_real_test_mode"] = bool(self.config["teleop"].get("first_real_test_mode", False))
         status["last_switch_max_q_jump_rad"] = self._last_switch_q_jump_rad[self.core.arm]
         status["fault_state"] = self.core.fault or feedback["fault_state"]

@@ -51,6 +51,7 @@ class ServoVelocityIntegrator:
         self.hold_active = True
         self.fault_latched = False
         self._last_lead_scale = 1.0
+        self._last_lead_reprojection_scale = 1.0
         self.last_event = "uninitialized"
 
     @property
@@ -74,6 +75,14 @@ class ServoVelocityIntegrator:
         """Common alpha applied to the most recent six-axis increment."""
         return self._last_lead_scale
 
+    @property
+    def last_lead_reprojection_scale(self) -> float:
+        """Common scale used when the prior lead vector exceeded max_lead_rad.
+
+        ``1.0`` means the latest integration step did not reproject.
+        """
+        return self._last_lead_reprojection_scale
+
     def reset_to_measured(self, measured: Iterable[float], now: float, event: str = "initial-hold") -> tuple[float, ...]:
         values = _vector(measured, "joint positions")
         self._initialized = True
@@ -87,6 +96,7 @@ class ServoVelocityIntegrator:
         self.hold_active = True
         self.fault_latched = False
         self._last_lead_scale = 1.0
+        self._last_lead_reprojection_scale = 1.0
         self.last_event = event
         return tuple(values)
 
@@ -121,6 +131,7 @@ class ServoVelocityIntegrator:
         self.fault_latched = False
         self._velocity = [0.0] * 6
         self._last_lead_scale = 0.0
+        self._last_lead_reprojection_scale = 1.0
         return self.begin_motion(now)
 
     def accept_velocity(self, velocity: Iterable[float], now: float) -> str | None:
@@ -162,20 +173,34 @@ class ServoVelocityIntegrator:
         self.fault_latched = True
         return hold
 
-    def _lead_scale(self, measured: list[float], increments: list[float]) -> float | None:
+    def _reproject_lead(self, measured: list[float]) -> float:
+        """Scale the whole lead vector back inside max_lead_rad.
+
+        Tracking lag can leave the previous target slightly ahead of measured
+        joints.  One scale is applied to all six axes so the lead direction
+        stays the same.  Per-joint clamps are intentionally not used.
+        """
+        limit = self.config.max_lead_rad
+        lead = [target - actual for target, actual in zip(self._target, measured)]
+        max_abs_lead = max(abs(value) for value in lead)
+        if max_abs_lead <= limit:
+            return 1.0
+        scale = limit / max_abs_lead
+        self._target = [actual + value * scale for actual, value in zip(measured, lead)]
+        return scale
+
+    def _lead_scale(self, measured: list[float], increments: list[float]) -> float:
         """Return a common alpha that keeps every target within the lead bound.
 
         A single joint nearing the bound slows the entire joint vector rather
         than independently clipping that joint and changing Servo's intended
-        six-axis velocity direction.  ``None`` means feedback already places
-        the prior target outside the invariant and requires a safety hold.
+        six-axis velocity direction.  Lead already outside the bound is
+        reprojected by ``_reproject_lead`` before this runs.
         """
         limit = self.config.max_lead_rad
         alpha = 1.0
         for target, actual, increment in zip(self._target, measured, increments):
             lead = target - actual
-            if abs(lead) > limit:
-                return None
             if increment > 0.0 and lead + increment > limit:
                 alpha = min(alpha, (limit - lead) / increment)
             elif increment < 0.0 and lead + increment < -limit:
@@ -204,9 +229,8 @@ class ServoVelocityIntegrator:
             return self.enter_fault_hold(measured, now, "timer-dt-out-of-range")
         measured_values = _vector(measured, "joint positions")
         increments = [qdot * dt for qdot in self._velocity]
+        self._last_lead_reprojection_scale = self._reproject_lead(measured_values)
         alpha = self._lead_scale(measured_values, increments)
-        if alpha is None:
-            return self.enter_fault_hold(measured_values, now, "lead-limit-invariant-violation")
         self._last_lead_scale = alpha
         self._target = [target + alpha * increment for target, increment in zip(self._target, increments)]
         self._published = list(self._target)

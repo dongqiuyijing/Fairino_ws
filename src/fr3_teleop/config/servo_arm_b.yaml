@@ -17,8 +17,9 @@ moveit_servo:
   num_outgoing_halt_msgs_to_publish: 4
   halt_all_joints_in_joint_mode: true
   halt_all_joints_in_cartesian_mode: true
-  lower_singularity_threshold: 17.0
-  hard_stop_singularity_threshold: 30.0
+  lower_singularity_threshold: 30.0
+  hard_stop_singularity_threshold: 60.0
+  leaving_singularity_threshold_multiplier: 2.0
   joint_limit_margin: 0.1
   check_collisions: true
   collision_check_rate: 10.0

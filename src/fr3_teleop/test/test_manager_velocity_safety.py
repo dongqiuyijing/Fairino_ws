@@ -69,6 +69,73 @@ def test_motion_while_manual_not_ready_preserves_existing_fault():
     assert manager.warnings == ["motion ignored: manual control is not ready"]
 
 
+class _RecoveryClient:
+    def __init__(self, events):
+        self.events = events
+        self.state_callback = None
+        self.release_callback = None
+
+    def get_controller_state(self, arm, callback):
+        self.events.append(("get-state", arm))
+        self.state_callback = callback
+        return True
+
+    def release_manual(self, arm, callback):
+        self.events.append(("release", arm))
+        self.release_callback = callback
+        return True
+
+
+class _FaultRecoveryHarness:
+    _begin_fault_recovery = TeleopManager._begin_fault_recovery
+    _on_fault_recovery_pair_state = TeleopManager._on_fault_recovery_pair_state
+    _on_fault_recovery_auto = TeleopManager._on_fault_recovery_auto
+    _fault_recovery_failed = TeleopManager._fault_recovery_failed
+
+    def __init__(self):
+        self.events = []
+        self.core = _Core()
+        self.core.fault = "raw-velocity-timeout"
+        self._manual_ready = False
+        self._manual_transition = "FAULT"
+        self._controller_client = _RecoveryClient(self.events)
+        self._on_fault_recovery_manual_switch = lambda *_args: None
+
+    def _cancel_hold(self, arm):
+        self.events.append(("cancel-hold", arm))
+
+    def _hold_integrator(self, arm, event):
+        self.events.append(("fixed-hold", arm, event))
+
+    def _request_manual_from_auto(self, callback):
+        self.events.append(("request-manual", callback))
+
+
+def test_fault_retry_holds_then_restores_auto_before_requesting_manual_again():
+    manager = _FaultRecoveryHarness()
+    manager._begin_fault_recovery()
+    assert manager._manual_transition == "RECOVERY_CHECKING_AUTO"
+    assert manager.events[:2] == [("cancel-hold", "arm_a"), ("fixed-hold", "arm_a", "fault-recovery")]
+    assert manager.core.commands == [{"type": "stop", "reason": "fault-recovery", "keep_claim": True}]
+    manager._controller_client.state_callback("MANUAL")
+    assert manager._manual_transition == "RECOVERY_RELEASING"
+    assert manager.events[-1] == ("release", "arm_a")
+    manager._controller_client.release_callback(True, "automatic restored")
+    assert manager.events[-1][0] == "request-manual"
+    # The original fault remains until strict MANUAL acquisition and Initial Hold pass.
+    assert manager.core.fault == "raw-velocity-timeout"
+
+
+def test_fault_retry_controller_restore_failure_remains_fault():
+    manager = _FaultRecoveryHarness()
+    manager._begin_fault_recovery()
+    manager._controller_client.state_callback("MANUAL")
+    manager._controller_client.release_callback(False, "switch rejected")
+    assert manager._manual_transition == "FAULT"
+    assert manager._manual_ready is False
+    assert manager.core.fault == "controller AUTO restore failed: switch rejected"
+
+
 class _Integrator:
     def __init__(self, events):
         self.events = events
