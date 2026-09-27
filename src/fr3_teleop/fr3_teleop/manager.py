@@ -75,6 +75,7 @@ class TeleopManager(Node):
         self._servo_status: dict[str, int] = {}
         self._hold_started: dict[str, float] = {}
         self._hold_timers: dict[str, Any] = {}
+        self._shutdown_started = False
         if backend_name == "servo":
             safety = config["safety"]
             self._auto_monitor = AutoTrajectoryMonitor(self, config["robots"],
@@ -150,9 +151,16 @@ class TeleopManager(Node):
                 if self.config["teleop"].get("first_real_test_mode", False):
                     if not (self.core.arm == "arm_a" and self.core.frame == "base" and data.get("axis") == "x" and int(data.get("sign", 0)) == 1):
                         raise ValueError("first_real_test_mode only permits Arm A / base / X+")
+                was_motion_active = self.core.active is not None
                 self.core.command(data)
                 if self.config["teleop"].get("backend") == "servo":
-                    self._integrators[self.core.arm].begin_motion(monotonic())
+                    integrator = self._integrators[self.core.arm]
+                    if was_motion_active:
+                        integrator.begin_motion(monotonic())
+                    else:
+                        # A new operator motion request is the only command
+                        # path allowed to clear an integrator fault latch.
+                        integrator.start_new_motion(monotonic())
             elif data.get("type") == "gripper" and self._grippers:
                 self._handle_gripper(data)
             else:
@@ -188,14 +196,10 @@ class TeleopManager(Node):
 
     def _on_servo_status(self, arm: str, msg: Int8) -> None:
         self._servo_status[arm] = int(msg.data)
-        # Humble status codes: 2 singularity halt, 4 collision halt, 5 joint bound.
-        if int(msg.data) in {2, 4, 5}:
-            self._hold_integrator(arm, "servo-safety-halt")
-            if arm == self.core.arm and self._manual_transition == "MANUAL_READY":
-                self._manual_ready = False
-                self.core.command({"type": "stop", "reason": "servo-safety-halt", "keep_claim": True})
-                self._manual_transition = "FAULT"
-                self.core.fault = f"MoveIt Servo safety halt status={int(msg.data)}"
+        # Humble: -1 INVALID, 2 singularity halt, 4 collision halt, 5 joint bound.
+        # 1/3 are deceleration warnings and 6 means leaving singularity.
+        if int(msg.data) in {-1, 2, 4, 5}:
+            self._integrator_fault(arm, f"MoveIt Servo safety halt status={int(msg.data)}")
 
     def _on_servo_raw(self, arm: str, msg: Float64MultiArray) -> None:
         """Consume only raw Servo output; final JGPC output remains manager-owned."""
@@ -211,7 +215,11 @@ class TeleopManager(Node):
             self._integrator_fault(arm, error)
 
     def _integrator_fault(self, arm: str, reason: str) -> None:
-        self._hold_integrator(arm, "fault")
+        integrator = self._integrators.get(arm)
+        measured = self._measured_for_arm(arm)
+        if integrator is not None and measured is not None:
+            hold = integrator.enter_fault_hold(measured, monotonic(), reason)
+            self._publish_command(arm, hold)
         if arm == self.core.arm:
             self._manual_ready = False
             self.core.command({"type": "stop", "reason": "velocity-integrator-fault", "keep_claim": True})
@@ -317,7 +325,38 @@ class TeleopManager(Node):
         except ValueError as error:
             self._integrator_fault(arm, f"invalid measured joint state: {error}")
             return
+        if self._integrators[arm].fault_latched:
+            self._integrator_fault(arm, self._integrators[arm].last_event)
+            return
         self._publish_command(arm, command)
+
+    def shutdown_safely(self) -> None:
+        """Stop integration, publish a fixed hold, then attempt AUTO restore."""
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
+        self.core.command({"type": "stop", "reason": "manager-shutdown"})
+        if self.config["teleop"].get("backend") != "servo":
+            return
+        arm = self.core.arm
+        self._cancel_hold(arm)
+        integrator = self._integrators.get(arm)
+        measured = self._measured_for_arm(arm)
+        if integrator is not None and measured is not None:
+            hold = integrator.enter_fixed_hold(measured, monotonic(), "manager-shutdown")
+            # A short burst gives DDS a chance to deliver the immutable hold
+            # before this node disappears; it never follows later feedback.
+            for _ in range(3):
+                self._publish_command(arm, hold)
+        else:
+            self.get_logger().warning("manager shutdown: measured joint state unavailable for fixed hold")
+        # A safety FAULT can still leave the teleop controller active, so it
+        # must also receive the best-effort AUTO restore attempt.
+        if self._manual_transition in {"HOLD_PENDING", "MANUAL_READY", "RELEASING", "FAULT"}:
+            self._manual_ready = False
+            self._manual_transition = "RELEASING"
+            if self._controller_client is None or not self._controller_client.release_manual(arm, self._on_release_result):
+                self.get_logger().warning("manager shutdown: controller AUTO restore unavailable after fixed hold")
 
     def _capture_switch_q(self, arm: str) -> None:
         values = self._feedback.status(arm, float(self.config["safety"]["robot_state_timeout_ms"]) / 1000.0)["joint_positions_rad"]
@@ -371,6 +410,7 @@ class TeleopManager(Node):
         integrator = self._integrators.get(self.core.arm)
         if integrator is not None:
             status["velocity_integrator_event"] = integrator.last_event
+            status["velocity_integrator_fault_latched"] = integrator.fault_latched
             status["velocity_integrator_target_rad"] = integrator.target
             status["velocity_integrator_hold_rad"] = integrator.stop_hold
         status["first_real_test_mode"] = bool(self.config["teleop"].get("first_real_test_mode", False))
@@ -426,7 +466,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        node.core.command({"type": "stop", "reason": "manager-shutdown"})
+        node.shutdown_safely()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

@@ -49,6 +49,7 @@ class ServoVelocityIntegrator:
         self._last_output_time: float | None = None
         self.integrator_active = False
         self.hold_active = True
+        self.fault_latched = False
         self.last_event = "uninitialized"
 
     @property
@@ -78,12 +79,20 @@ class ServoVelocityIntegrator:
         self._last_output_time = now
         self.integrator_active = False
         self.hold_active = True
+        self.fault_latched = False
         self.last_event = event
         return tuple(values)
 
-    def begin_motion(self, now: float) -> None:
+    def begin_motion(self, now: float) -> bool:
+        """Start integration only when no safety fault is latched.
+
+        Repeated GUI motion messages are deliberately idempotent: they must
+        not reset the output clock while motion is already active.
+        """
         if not self._initialized:
             raise RuntimeError("velocity integrator is not initialized")
+        if self.fault_latched:
+            return False
         if not self.integrator_active:
             self.integrator_active = True
             self.hold_active = False
@@ -93,6 +102,18 @@ class ServoVelocityIntegrator:
             self._last_velocity_rx = now
             self._last_output_time = now
             self.last_event = "motion-started"
+        return True
+
+    def start_new_motion(self, now: float) -> bool:
+        """Explicit manager-authorized new motion start.
+
+        ``tick()`` never clears a fault latch.  Only this manager-facing API
+        (or a new AUTO -> MANUAL reset) may re-arm a recoverable held
+        integrator after the operator has issued a new motion command.
+        """
+        self.fault_latched = False
+        self._velocity = [0.0] * 6
+        return self.begin_motion(now)
 
     def accept_velocity(self, velocity: Iterable[float], now: float) -> str | None:
         try:
@@ -113,8 +134,9 @@ class ServoVelocityIntegrator:
 
     def enter_fixed_hold(self, measured: Iterable[float], now: float, event: str) -> tuple[float, ...]:
         """Capture feedback once; later feedback noise must not move the hold target."""
-        if not self.hold_active:
+        if not self._initialized or not self.hold_active:
             values = _vector(measured, "joint positions")
+            self._initialized = True
             self._target = list(values)
             self._published = list(values)
             self._stop_hold = list(values)
@@ -126,23 +148,32 @@ class ServoVelocityIntegrator:
         self.last_event = event
         return tuple(self._stop_hold)
 
+    def enter_fault_hold(self, measured: Iterable[float], now: float, event: str) -> tuple[float, ...]:
+        """Enter a latched safety hold that cannot be cleared by ``tick()``."""
+        hold = self.enter_fixed_hold(measured, now, event)
+        self.fault_latched = True
+        return hold
+
     def tick(self, measured: Iterable[float], now: float, motion_active: bool) -> tuple[float, ...]:
         _vector(measured, "joint positions")  # Validate even while holding.
         if not self._initialized:
             return self.reset_to_measured(measured, now, "initialized")
+        if self.fault_latched:
+            return tuple(self._stop_hold)
         if not motion_active:
             return self.enter_fixed_hold(measured, now, "fixed-hold")
-        self.begin_motion(now)
+        if not self.begin_motion(now):
+            return tuple(self._stop_hold)
         assert self._last_velocity_rx is not None
         if now - self._last_velocity_rx > self.config.raw_velocity_timeout_s:
-            return self.enter_fixed_hold(measured, now, "raw-velocity-timeout")
+            return self.enter_fault_hold(measured, now, "raw-velocity-timeout")
         assert self._last_output_time is not None
         dt = now - self._last_output_time
         self._last_output_time = now
         if dt <= 0:
             return tuple(self._published)
         if dt > self.config.max_timer_dt_s:
-            return self.enter_fixed_hold(measured, now, "timer-dt-out-of-range")
+            return self.enter_fault_hold(measured, now, "timer-dt-out-of-range")
         measured_values = _vector(measured, "joint positions")
         self._target = [
             max(actual - self.config.max_lead_rad,

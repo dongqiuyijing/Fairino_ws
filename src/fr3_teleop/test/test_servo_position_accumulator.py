@@ -28,6 +28,9 @@ def test_large_timer_gap_is_safe_fixed_hold_not_position_jump():
     integrator.begin_motion(0.0); integrator.accept_velocity([0.5] * 6, 0.0)
     assert integrator.tick(actual, 0.1, True) == pytest.approx(actual)
     assert integrator.last_event == "timer-dt-out-of-range"
+    assert integrator.fault_latched
+    # A held button must not make tick() silently restart after a timer fault.
+    assert integrator.tick([1.001] * 6, 0.108, True) == pytest.approx(actual)
 
 
 def test_lead_is_bounded_against_current_feedback_during_motion():
@@ -48,6 +51,30 @@ def test_invalid_velocity_and_timeout_stop_integration():
     assert "exceeds" in integrator.accept_velocity([4.0] * 6, 0.0)
     assert integrator.tick(actual, 0.13, True) == pytest.approx(actual)
     assert integrator.last_event == "raw-velocity-timeout"
+    assert integrator.fault_latched
+    assert integrator.tick([0.501] * 6, 0.138, True) == pytest.approx(actual)
+
+
+def test_explicit_new_motion_start_is_required_to_clear_fault_latch():
+    integrator = make_integrator(); actual = [0.0] * 6; integrator.reset_to_measured(actual, 0.0)
+    integrator.begin_motion(0.0)
+    assert integrator.tick(actual, 0.13, True) == pytest.approx(actual)
+    assert integrator.fault_latched
+    # begin_motion is intentionally insufficient; only the manager-facing
+    # new-motion API may re-arm the integrator.
+    assert not integrator.begin_motion(0.14)
+    assert integrator.start_new_motion(0.14)
+    assert not integrator.fault_latched
+    assert integrator.accept_velocity([0.1] * 6, 0.14) is None
+    assert integrator.tick(actual, 0.148, True) == pytest.approx([0.0008] * 6)
+
+
+def test_uninitialized_fixed_hold_captures_measured_position_never_zero():
+    integrator = make_integrator()
+    measured = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    assert integrator.enter_fixed_hold(measured, 1.0, "shutdown") == pytest.approx(measured)
+    assert integrator.target == pytest.approx(measured)
+    assert integrator.stop_hold == pytest.approx(measured)
 
 
 def test_stop_captures_feedback_once_and_never_tracks_later_noise():
