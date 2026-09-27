@@ -50,6 +50,7 @@ class ServoVelocityIntegrator:
         self.integrator_active = False
         self.hold_active = True
         self.fault_latched = False
+        self._last_lead_scale = 1.0
         self.last_event = "uninitialized"
 
     @property
@@ -68,6 +69,11 @@ class ServoVelocityIntegrator:
     def velocity(self) -> tuple[float, ...]:
         return tuple(self._velocity)
 
+    @property
+    def last_lead_scale(self) -> float:
+        """Common alpha applied to the most recent six-axis increment."""
+        return self._last_lead_scale
+
     def reset_to_measured(self, measured: Iterable[float], now: float, event: str = "initial-hold") -> tuple[float, ...]:
         values = _vector(measured, "joint positions")
         self._initialized = True
@@ -80,6 +86,7 @@ class ServoVelocityIntegrator:
         self.integrator_active = False
         self.hold_active = True
         self.fault_latched = False
+        self._last_lead_scale = 1.0
         self.last_event = event
         return tuple(values)
 
@@ -113,6 +120,7 @@ class ServoVelocityIntegrator:
         """
         self.fault_latched = False
         self._velocity = [0.0] * 6
+        self._last_lead_scale = 0.0
         return self.begin_motion(now)
 
     def accept_velocity(self, velocity: Iterable[float], now: float) -> str | None:
@@ -154,6 +162,26 @@ class ServoVelocityIntegrator:
         self.fault_latched = True
         return hold
 
+    def _lead_scale(self, measured: list[float], increments: list[float]) -> float | None:
+        """Return a common alpha that keeps every target within the lead bound.
+
+        A single joint nearing the bound slows the entire joint vector rather
+        than independently clipping that joint and changing Servo's intended
+        six-axis velocity direction.  ``None`` means feedback already places
+        the prior target outside the invariant and requires a safety hold.
+        """
+        limit = self.config.max_lead_rad
+        alpha = 1.0
+        for target, actual, increment in zip(self._target, measured, increments):
+            lead = target - actual
+            if abs(lead) > limit:
+                return None
+            if increment > 0.0 and lead + increment > limit:
+                alpha = min(alpha, (limit - lead) / increment)
+            elif increment < 0.0 and lead + increment < -limit:
+                alpha = min(alpha, (-limit - lead) / increment)
+        return max(0.0, min(1.0, alpha))
+
     def tick(self, measured: Iterable[float], now: float, motion_active: bool) -> tuple[float, ...]:
         _vector(measured, "joint positions")  # Validate even while holding.
         if not self._initialized:
@@ -175,11 +203,12 @@ class ServoVelocityIntegrator:
         if dt > self.config.max_timer_dt_s:
             return self.enter_fault_hold(measured, now, "timer-dt-out-of-range")
         measured_values = _vector(measured, "joint positions")
-        self._target = [
-            max(actual - self.config.max_lead_rad,
-                min(actual + self.config.max_lead_rad, target + qdot * dt))
-            for target, qdot, actual in zip(self._target, self._velocity, measured_values)
-        ]
+        increments = [qdot * dt for qdot in self._velocity]
+        alpha = self._lead_scale(measured_values, increments)
+        if alpha is None:
+            return self.enter_fault_hold(measured_values, now, "lead-limit-invariant-violation")
+        self._last_lead_scale = alpha
+        self._target = [target + alpha * increment for target, increment in zip(self._target, increments)]
         self._published = list(self._target)
         self.last_event = "running"
         return tuple(self._published)

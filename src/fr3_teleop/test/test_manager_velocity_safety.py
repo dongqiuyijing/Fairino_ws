@@ -1,8 +1,9 @@
 """Manager-only safety routing tests; no ROS graph or robot is used."""
 
 from types import SimpleNamespace
+import json
 
-from std_msgs.msg import Int8
+from std_msgs.msg import Int8, String
 
 from fr3_teleop.manager import TeleopManager
 
@@ -12,6 +13,7 @@ class _Core:
         self.arm = "arm_a"
         self.commands = []
         self.fault = ""
+        self.active = None
 
     def command(self, command):
         self.commands.append(command)
@@ -36,6 +38,35 @@ def test_servo_invalid_status_is_a_fault_but_deceleration_warnings_are_not():
     for warning in (1, 3, 6):
         TeleopManager._on_servo_status(manager, "arm_a", Int8(data=warning))
     assert len(manager.faults) == 1
+
+
+class _MotionIgnoredHarness:
+    _on_command = TeleopManager._on_command
+
+    def __init__(self):
+        self.core = _Core()
+        self.core.fault = "raw-velocity-timeout"
+        self._manual_ready = False
+        self._manual_transition = "FAULT"
+        self.config = {"teleop": {"backend": "servo", "first_real_test_mode": False}}
+        self.warnings = []
+
+    def get_logger(self):
+        return SimpleNamespace(
+            warning=self.warnings.append,
+            error=lambda _message: None,
+        )
+
+
+def test_motion_while_manual_not_ready_preserves_existing_fault():
+    manager = _MotionIgnoredHarness()
+    message = String()
+    message.data = json.dumps({"type": "motion", "axis": "x", "sign": 1, "source": "gui"})
+    manager._on_command(message)
+    assert manager.core.fault == "raw-velocity-timeout"
+    assert manager._manual_transition == "FAULT"
+    assert manager.core.commands == []
+    assert manager.warnings == ["motion ignored: manual control is not ready"]
 
 
 class _Integrator:

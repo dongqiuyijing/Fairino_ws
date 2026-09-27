@@ -147,7 +147,11 @@ class TeleopManager(Node):
                 self._handle_enable(data)
             elif data.get("type") == "motion":
                 if not self._manual_ready:
-                    raise ValueError("manual ownership / initial hold gate is not ready")
+                    # GUI repeats can arrive after an asynchronous safety
+                    # fault.  They are input noise, not a new fault cause.
+                    # Preserve the original FAULT state and its root reason.
+                    self.get_logger().warning("motion ignored: manual control is not ready")
+                    return
                 if self.config["teleop"].get("first_real_test_mode", False):
                     if not (self.core.arm == "arm_a" and self.core.frame == "base" and data.get("axis") == "x" and int(data.get("sign", 0)) == 1):
                         raise ValueError("first_real_test_mode only permits Arm A / base / X+")

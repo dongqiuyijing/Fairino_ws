@@ -21,6 +21,7 @@ def test_constant_velocity_integrates_actual_timer_dt_without_position_differenc
     assert integrator.tick(actual, 0.008, True) == pytest.approx([0.0008] * 6)
     assert integrator.tick(actual, 0.015, True) == pytest.approx([0.0015] * 6)
     assert integrator.tick(actual, 0.024, True) == pytest.approx([0.0024] * 6)
+    assert integrator.last_lead_scale == pytest.approx(1.0)
 
 
 def test_large_timer_gap_is_safe_fixed_hold_not_position_jump():
@@ -41,6 +42,26 @@ def test_lead_is_bounded_against_current_feedback_during_motion():
         if index % 5 == 0: integrator.accept_velocity([1.0] * 6, now)
         integrator.tick(actual, now, True)
     assert integrator.target == pytest.approx([0.02] * 6)
+
+
+def test_lead_limit_scales_all_six_joint_increments_by_one_alpha():
+    integrator = make_integrator(); actual = [0.0] * 6; integrator.reset_to_measured(actual, 0.0)
+    integrator.begin_motion(0.0)
+    # Place only joint 1 close to the positive lead bound.
+    integrator.accept_velocity([1.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.0)
+    assert integrator.tick(actual, 0.019, True) == pytest.approx([0.019, 0.0, 0.0, 0.0, 0.0, 0.0])
+    qdot = [1.0, 0.5, 0.25, -0.5, 0.1, -0.2]
+    integrator.accept_velocity(qdot, 0.019)
+    before = integrator.target
+    after = integrator.tick(actual, 0.027, True)
+    increments = [new - old for new, old in zip(after, before)]
+    expected_alpha = 0.001 / 0.008
+    assert integrator.last_lead_scale == pytest.approx(expected_alpha)
+    assert increments == pytest.approx([expected_alpha * velocity * 0.008 for velocity in qdot])
+    assert all(abs(target - measured) <= 0.02 + 1e-12 for target, measured in zip(after, actual))
+    # All nonzero joints preserve the original qdot proportions.
+    assert increments[1] / increments[0] == pytest.approx(qdot[1] / qdot[0])
+    assert increments[3] / increments[0] == pytest.approx(qdot[3] / qdot[0])
 
 
 def test_invalid_velocity_and_timeout_stop_integration():
