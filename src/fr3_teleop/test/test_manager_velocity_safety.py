@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 import json
 
-from std_msgs.msg import Int8, String
+from std_msgs.msg import Float64MultiArray, Int8, String
 
 from fr3_teleop.manager import TeleopManager
 
@@ -181,6 +181,87 @@ class _ShutdownHarness:
 
     def get_logger(self):
         return SimpleNamespace(warning=lambda _message: None)
+
+
+class _SettleIntegrator:
+    def __init__(self, events):
+        self.events = events
+        self.fault_latched = False
+        self.settling = False
+        self.integrator_active = True
+
+    def begin_stop_settling(self, measured, _now, event):
+        self.events.append(("settle", event, tuple(measured)))
+        self.settling = True
+        self.integrator_active = False
+        return (0.2,) * 6
+
+    def enter_fixed_hold(self, measured, _now, event):
+        self.events.append(("fixed", event, tuple(measured)))
+        return tuple(measured)
+
+    def accept_velocity(self, velocity, _now):
+        self.events.append(("accept", tuple(velocity)))
+        return None
+
+
+class _StopOrderHarness:
+    _on_command = TeleopManager._on_command
+    _hold_integrator = TeleopManager._hold_integrator
+    _on_servo_raw = TeleopManager._on_servo_raw
+
+    def __init__(self):
+        self.events = []
+        self.published = []
+        self.core = _Core()
+        self.core.active = object()
+        self.core.events = self.events
+        self._manual_ready = True
+        self._manual_transition = "MANUAL_READY"
+        self._servo_motion_allowed = True
+        self.config = {"teleop": {"backend": "servo", "first_real_test_mode": False}}
+        self._integrators = {"arm_a": _SettleIntegrator(self.events)}
+
+    def _measured_for_arm(self, _arm):
+        return [0.0] * 6
+
+    def _publish_command(self, arm, command):
+        self.published.append((arm, tuple(command)))
+
+
+def _command(core, command):
+    core.events.append(("twist-stop", command))
+    core.commands.append(command)
+    if command.get("type") == "stop":
+        core.active = None
+
+
+def test_button_release_settles_before_zeroing_twist_and_does_not_jump():
+    manager = _StopOrderHarness()
+    manager.core.command = lambda command: _command(manager.core, command)
+    message = String()
+    message.data = json.dumps({"type": "stop", "reason": "button-released"})
+    manager._on_command(message)
+    assert manager.events[0][0] == "settle"
+    assert manager.events[0][1] == "stop"
+    assert manager.events[1][0] == "twist-stop"
+    assert manager.events[1][1]["type"] == "stop"
+    assert manager.published == [("arm_a", (0.2,) * 6)]
+    assert manager._manual_transition == "MANUAL_READY"
+    assert manager._manual_ready is True
+    assert manager.core.fault == ""
+    raw = Float64MultiArray()
+    raw.data = [0.4] * 6
+    manager._on_servo_raw("arm_a", raw)
+    assert not any(event[0] == "accept" for event in manager.events)
+
+
+def test_fault_stop_still_captures_feedback_instead_of_settling():
+    manager = _StopOrderHarness()
+    manager._integrators["arm_a"].fault_latched = True
+    manager._hold_integrator("arm_a", "stop")
+    assert manager.events == [("fixed", "stop", (0.0,) * 6)]
+    assert manager.published == [("arm_a", (0.0,) * 6)]
 
 
 def test_shutdown_holds_before_attempting_manual_controller_release():

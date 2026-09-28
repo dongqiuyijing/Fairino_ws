@@ -134,7 +134,159 @@ def test_arm_integrators_have_no_shared_target_or_stop_hold_state():
 def test_configured_max_lead_rad_is_0_5():
     path = Path(__file__).resolve().parents[1] / "config" / "teleop.yaml"
     config = yaml.safe_load(path.read_text())
-    assert config["teleop"]["velocity_integrator"]["max_lead_rad"] == 0.5
+    velocity = config["teleop"]["velocity_integrator"]
+    assert velocity["max_lead_rad"] == 0.5
+    assert velocity["stop_correction_velocity_rad_s"] == 0.25
+    assert velocity["stop_hold_tolerance_rad"] == 0.002
+    assert velocity["stop_settle_timeout_s"] == 1.0
+    assert velocity["stop_stationary_delta_rad"] == 0.0004
+
+
+def _plant_lead(integrator, measured, lead, now=0.0):
+    integrator.reset_to_measured(measured, now)
+    integrator.begin_motion(now)
+    integrator._target = [actual + value for actual, value in zip(measured, lead)]
+    integrator._published = list(integrator._target)
+    assert integrator.accept_velocity([0.0] * 6, now) is None
+
+
+def test_ending_motion_without_an_explicit_hold_also_settles():
+    integrator = make_integrator(0.5)
+    measured = [0.0] * 6
+    _plant_lead(integrator, measured, [0.1] * 6)
+    published = integrator.tick(measured, 0.008, False)
+    step = integrator.config.stop_correction_velocity_rad_s * 0.008
+    assert published == pytest.approx([0.1 - step] * 6)
+    assert integrator.last_event == "stop-settling"
+    assert not integrator.fault_latched
+
+
+def test_button_release_keeps_the_position_command_continuous():
+    integrator = make_integrator(0.5)
+    measured = [0.0] * 6
+    _plant_lead(integrator, measured, [0.1] * 6)
+    released = integrator.begin_stop_settling(measured, 0.0, "stop")
+    assert released == pytest.approx([0.1] * 6)
+    assert integrator.last_event == "stop-settling"
+    assert integrator.velocity == pytest.approx([0.0] * 6)
+    assert not integrator.fault_latched
+    assert integrator.stop_settle_max_lead_rad == pytest.approx(0.1)
+
+
+def test_stop_settling_reduces_max_lead_monotonically_then_holds():
+    integrator = make_integrator(0.5)
+    measured = [0.0] * 6
+    _plant_lead(integrator, measured, [0.1] * 6)
+    integrator.begin_stop_settling(measured, 0.0, "stop")
+    leads = []
+    for index in range(1, 200):
+        published = integrator.tick(measured, index * 0.008, False)
+        leads.append(max(abs(value - actual) for value, actual in zip(published, measured)))
+        if integrator.last_event == "fixed-hold":
+            break
+    assert integrator.last_event == "fixed-hold"
+    assert leads[-1] == pytest.approx(0.0)
+    assert all(later < earlier for earlier, later in zip(leads, leads[1:]))
+    assert integrator.target == pytest.approx(measured)
+    assert integrator.stop_hold == pytest.approx(measured)
+
+
+def test_stop_settling_scales_all_six_joint_leads_together():
+    integrator = make_integrator(0.5)
+    measured = [0.2, -0.1, 0.05, 0.0, -0.3, 0.15]
+    lead = [0.10, 0.05, -0.03, 0.08, -0.02, 0.04]
+    _plant_lead(integrator, measured, lead)
+    integrator.begin_stop_settling(measured, 0.0, "stop")
+    published = integrator.tick(measured, 0.008, False)
+    dt = 0.008
+    max_step = integrator.config.stop_correction_velocity_rad_s * dt
+    scale = (0.10 - max_step) / 0.10
+    actual_lead = [command - actual for command, actual in zip(published, measured)]
+    assert actual_lead == pytest.approx([value * scale for value in lead])
+    assert [value / actual_lead[0] for value in actual_lead] == pytest.approx([value / lead[0] for value in lead])
+    assert integrator.last_event == "stop-settling"
+    assert max(abs(value) for value in actual_lead) < 0.10
+
+
+def test_fixed_hold_ignores_feedback_noise_after_stop_settling():
+    integrator = make_integrator(0.5)
+    measured = [0.0] * 6
+    _plant_lead(integrator, measured, [0.01] * 6)
+    integrator.begin_stop_settling(measured, 0.0, "stop")
+    held = None
+    for index in range(1, 50):
+        held = integrator.tick(measured, index * 0.008, False)
+        if integrator.last_event == "fixed-hold":
+            break
+    assert held == pytest.approx(measured)
+    assert integrator.tick([0.001] * 6, 1.0, False) == pytest.approx(measured)
+    assert integrator.tick([-0.001] * 6, 1.008, False) == pytest.approx(measured)
+    assert integrator.target == pytest.approx(measured)
+    assert integrator.stop_hold == pytest.approx(measured)
+
+
+def test_stale_raw_velocity_cannot_restart_motion_while_settling():
+    integrator = make_integrator(0.5)
+    measured = [0.0] * 6
+    lead = [0.10, 0.05, -0.03, 0.08, -0.02, 0.04]
+    _plant_lead(integrator, measured, lead)
+    integrator.begin_stop_settling(measured, 0.0, "stop")
+    assert integrator.accept_velocity([1.0, -0.5, 0.25, -0.2, 0.1, -0.4], 0.004) is None
+    assert integrator.velocity == pytest.approx([0.0] * 6)
+    published = integrator.tick(measured, 0.008, False)
+    dt = 0.008
+    scale = (0.10 - integrator.config.stop_correction_velocity_rad_s * dt) / 0.10
+    assert published == pytest.approx([actual + value * scale for actual, value in zip(measured, lead)])
+    assert integrator.last_event == "stop-settling"
+    assert not integrator.fault_latched
+
+
+def test_new_motion_leaves_fixed_hold_and_integrates_again():
+    integrator = make_integrator(0.5)
+    measured = [0.2, -0.2, 0.0, 0.1, -0.1, 0.3]
+    _plant_lead(integrator, measured, [0.01] * 6)
+    integrator.begin_stop_settling(measured, 0.0, "stop")
+    now = 0.008
+    while integrator.last_event != "fixed-hold":
+        integrator.tick(measured, now, False)
+        now += 0.008
+        assert now < 2.0
+    assert integrator.start_new_motion(now)
+    assert not integrator.fault_latched
+    assert not integrator.settling
+    assert integrator.accept_velocity([0.1] * 6, now) is None
+    assert integrator.tick(measured, now + 0.008, True) == pytest.approx([value + 0.0008 for value in measured])
+    assert integrator.last_event == "running"
+
+
+def test_new_motion_during_settling_continues_from_the_current_command():
+    integrator = make_integrator(0.5)
+    measured = [0.0] * 6
+    _plant_lead(integrator, measured, [0.1] * 6)
+    integrator.begin_stop_settling(measured, 0.0, "stop")
+    integrator.tick(measured, 0.008, False)
+    current = integrator.target
+    assert current != pytest.approx(measured)
+    assert integrator.start_new_motion(0.016)
+    assert integrator.accept_velocity([0.1] * 6, 0.016) is None
+    assert integrator.tick(measured, 0.024, True) == pytest.approx([value + 0.0008 for value in current])
+    assert integrator.last_event == "running"
+    assert not integrator.settling
+
+
+def test_fault_hold_still_captures_feedback_immediately():
+    integrator = make_integrator(0.5)
+    measured = [0.3, -0.2, 0.1, 0.0, -0.4, 0.2]
+    _plant_lead(integrator, measured, [0.1, -0.05, 0.02, 0.0, -0.01, 0.04])
+    integrator.begin_stop_settling(measured, 0.0, "stop")
+    assert integrator.enter_fault_hold(measured, 0.008, "servo-safety-halt") == pytest.approx(measured)
+    assert integrator.fault_latched
+    assert not integrator.settling
+    assert integrator.tick([value + 0.01 for value in measured], 0.016, False) == pytest.approx(measured)
+    assert integrator.tick(measured, 0.024, True) == pytest.approx(measured)
+    assert integrator.begin_stop_settling(measured, 0.032, "stop") == pytest.approx(measured)
+    assert integrator.fault_latched
+    assert integrator.last_event == "servo-safety-halt"
 
 
 def test_lead_below_limit_integrates_without_reprojection():

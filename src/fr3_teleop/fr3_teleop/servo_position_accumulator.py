@@ -27,12 +27,27 @@ class VelocityIntegratorConfig:
     max_raw_joint_velocity_rad_s: float
     raw_velocity_timeout_s: float
     max_timer_dt_s: float
+    # Command approaches measured at this joint speed after a normal stop.
+    # 0.25 rad/s removes a 0.09 rad tracking lead in about 0.36 s, and one
+    # 125 Hz step is only 0.002 rad, so the stop does not snap backward.
+    stop_correction_velocity_rad_s: float = 0.25
+    stop_hold_tolerance_rad: float = 0.002
+    stop_settle_timeout_s: float = 1.0
+    # Maximum joint motion between 125 Hz samples treated as "already stopped".
+    stop_stationary_delta_rad: float = 0.0004
 
     def __post_init__(self) -> None:
         if self.max_lead_rad <= 0 or self.max_raw_joint_velocity_rad_s <= 0:
             raise ValueError("velocity integrator limits must be positive")
         if self.raw_velocity_timeout_s <= 0 or self.max_timer_dt_s <= 0:
             raise ValueError("velocity integrator timeouts must be positive")
+        if (
+            self.stop_correction_velocity_rad_s <= 0
+            or self.stop_hold_tolerance_rad <= 0
+            or self.stop_settle_timeout_s <= 0
+            or self.stop_stationary_delta_rad <= 0
+        ):
+            raise ValueError("stop settling limits must be positive")
 
 
 class ServoVelocityIntegrator:
@@ -49,9 +64,13 @@ class ServoVelocityIntegrator:
         self._last_output_time: float | None = None
         self.integrator_active = False
         self.hold_active = True
+        self._settling = False
+        self._settle_started: float | None = None
+        self._settle_prev_measured: list[float] | None = None
         self.fault_latched = False
         self._last_lead_scale = 1.0
         self._last_lead_reprojection_scale = 1.0
+        self._stop_settle_max_lead_rad = 0.0
         self.last_event = "uninitialized"
 
     @property
@@ -83,6 +102,15 @@ class ServoVelocityIntegrator:
         """
         return self._last_lead_reprojection_scale
 
+    @property
+    def settling(self) -> bool:
+        return self._settling
+
+    @property
+    def stop_settle_max_lead_rad(self) -> float:
+        """Largest |command - measured| joint lead during stop settling."""
+        return self._stop_settle_max_lead_rad
+
     def reset_to_measured(self, measured: Iterable[float], now: float, event: str = "initial-hold") -> tuple[float, ...]:
         values = _vector(measured, "joint positions")
         self._initialized = True
@@ -94,9 +122,13 @@ class ServoVelocityIntegrator:
         self._last_output_time = now
         self.integrator_active = False
         self.hold_active = True
+        self._settling = False
+        self._settle_started = None
+        self._settle_prev_measured = None
         self.fault_latched = False
         self._last_lead_scale = 1.0
         self._last_lead_reprojection_scale = 1.0
+        self._stop_settle_max_lead_rad = 0.0
         self.last_event = event
         return tuple(values)
 
@@ -110,6 +142,9 @@ class ServoVelocityIntegrator:
             raise RuntimeError("velocity integrator is not initialized")
         if self.fault_latched:
             return False
+        self._settling = False
+        self._settle_started = None
+        self._settle_prev_measured = None
         if not self.integrator_active:
             self.integrator_active = True
             self.hold_active = False
@@ -151,6 +186,32 @@ class ServoVelocityIntegrator:
             self.last_event = "running"
         return None
 
+    def begin_stop_settling(self, measured: Iterable[float], now: float, event: str = "stop") -> tuple[float, ...]:
+        """Stop using qdot without jumping the position command to feedback.
+
+        A normal button release keeps the last command, then later ticks pull
+        that command toward measured.  A latched fault is left untouched.
+        """
+        values = _vector(measured, "joint positions")
+        if self.fault_latched:
+            return tuple(self._stop_hold)
+        if not self._initialized or (self.hold_active and not self._settling):
+            if not self._initialized:
+                return self.enter_fixed_hold(values, now, event)
+            return tuple(self._stop_hold)
+        if not self._settling:
+            self._velocity = [0.0] * 6
+            self._last_velocity_rx = None
+            self.integrator_active = False
+            self.hold_active = False
+            self._settling = True
+            self._settle_started = now
+            self._settle_prev_measured = None
+            self.last_event = "stop-settling"
+            lead = [target - actual for target, actual in zip(self._target, values)]
+            self._stop_settle_max_lead_rad = max(abs(value) for value in lead)
+        return tuple(self._published)
+
     def enter_fixed_hold(self, measured: Iterable[float], now: float, event: str) -> tuple[float, ...]:
         """Capture feedback once; later feedback noise must not move the hold target."""
         if not self._initialized or not self.hold_active:
@@ -164,6 +225,9 @@ class ServoVelocityIntegrator:
         self._last_output_time = now
         self.integrator_active = False
         self.hold_active = True
+        self._settling = False
+        self._settle_started = None
+        self._settle_prev_measured = None
         self.last_event = event
         return tuple(self._stop_hold)
 
@@ -207,14 +271,58 @@ class ServoVelocityIntegrator:
                 alpha = min(alpha, (-limit - lead) / increment)
         return max(0.0, min(1.0, alpha))
 
+    def _advance_stop_settling(self, measured: list[float], now: float) -> tuple[float, ...]:
+        """Shrink the whole lead vector toward the current feedback.
+
+        One scale updates all six joints.  The command therefore stays
+        continuous and does not remain parked on the pre-release target.
+        """
+        if self._last_output_time is None:
+            dt = self.config.max_timer_dt_s
+        else:
+            dt = now - self._last_output_time
+        if dt <= 0:
+            return tuple(self._published)
+        self._last_output_time = now
+        # A stalled timer must not spend the entire lead in one sample.
+        dt = min(dt, self.config.max_timer_dt_s)
+        lead = [target - actual for target, actual in zip(self._target, measured)]
+        max_error = max(abs(value) for value in lead)
+        max_step = self.config.stop_correction_velocity_rad_s * dt
+        if max_error <= max_step:
+            new_target = list(measured)
+        else:
+            scale = (max_error - max_step) / max_error
+            new_target = [actual + value * scale for actual, value in zip(measured, lead)]
+        new_lead = [command - actual for command, actual in zip(new_target, measured)]
+        new_max = max(abs(value) for value in new_lead)
+        self._stop_settle_max_lead_rad = new_max
+        stationary = False
+        if self._settle_prev_measured is not None:
+            delta = max(abs(current - previous) for current, previous in zip(measured, self._settle_prev_measured))
+            stationary = delta <= self.config.stop_stationary_delta_rad
+        self._settle_prev_measured = list(measured)
+        timed_out = self._settle_started is not None and now - self._settle_started >= self.config.stop_settle_timeout_s
+        if new_max <= self.config.stop_hold_tolerance_rad and (stationary or timed_out):
+            self._stop_settle_max_lead_rad = 0.0
+            return self.enter_fixed_hold(measured, now, "fixed-hold")
+        self._target = new_target
+        self._published = list(new_target)
+        self.last_event = "stop-settling"
+        return tuple(self._published)
+
     def tick(self, measured: Iterable[float], now: float, motion_active: bool) -> tuple[float, ...]:
-        _vector(measured, "joint positions")  # Validate even while holding.
+        measured_values = _vector(measured, "joint positions")  # Validate even while holding.
         if not self._initialized:
-            return self.reset_to_measured(measured, now, "initialized")
+            return self.reset_to_measured(measured_values, now, "initialized")
         if self.fault_latched:
             return tuple(self._stop_hold)
         if not motion_active:
-            return self.enter_fixed_hold(measured, now, "fixed-hold")
+            if self._settling or self.integrator_active:
+                if not self._settling:
+                    self.begin_stop_settling(measured_values, now, "stop")
+                return self._advance_stop_settling(measured_values, now)
+            return self.enter_fixed_hold(measured_values, now, "fixed-hold")
         if not self.begin_motion(now):
             return tuple(self._stop_hold)
         assert self._last_velocity_rx is not None

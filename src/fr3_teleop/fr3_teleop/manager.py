@@ -90,6 +90,10 @@ class TeleopManager(Node):
                 max_raw_joint_velocity_rad_s=float(velocity_cfg["max_raw_joint_velocity_rad_s"]),
                 raw_velocity_timeout_s=float(velocity_cfg["raw_velocity_timeout_s"]),
                 max_timer_dt_s=float(velocity_cfg["max_timer_dt_s"]),
+                stop_correction_velocity_rad_s=float(velocity_cfg["stop_correction_velocity_rad_s"]),
+                stop_hold_tolerance_rad=float(velocity_cfg["stop_hold_tolerance_rad"]),
+                stop_settle_timeout_s=float(velocity_cfg["stop_settle_timeout_s"]),
+                stop_stationary_delta_rad=float(velocity_cfg["stop_stationary_delta_rad"]),
             )
             for arm, spec in config["robots"].items():
                 joints = [f"{spec['joint_prefix']}j{i}" for i in range(1, 7)]
@@ -139,8 +143,9 @@ class TeleopManager(Node):
             data = json.loads(msg.data)
             if not isinstance(data, dict):
                 raise ValueError("JSON command must be an object")
-            # These commands must immediately discard any lead accumulated from
-            # a preceding held button, before ControlCore emits its zero Twist.
+            # Stop the integrator before ControlCore emits its zero Twist.
+            # A normal stop keeps the last position command and settles; it
+            # must not be overwritten by a later raw velocity sample.
             if data.get("type") in {"stop", "release", "select_arm", "set_frame", "set_speed"}:
                 self._hold_integrator(self.core.arm, str(data.get("type")))
             if data.get("type") == "enable" and self.config["teleop"].get("backend") == "servo":
@@ -195,8 +200,16 @@ class TeleopManager(Node):
     def _hold_integrator(self, arm: str, event: str) -> None:
         integrator = self._integrators.get(arm)
         measured = self._measured_for_arm(arm)
-        if integrator is not None and measured is not None:
-            self._publish_command(arm, integrator.enter_fixed_hold(measured, monotonic(), event))
+        if integrator is None or measured is None:
+            return
+        # Button release keeps commanding the same arm, so the lead can converge
+        # on later 125 Hz ticks. Fault, shutdown, arm changes, and leaving
+        # manual mode still capture feedback immediately.
+        if event in {"stop", "release"} and not integrator.fault_latched:
+            command = integrator.begin_stop_settling(measured, monotonic(), event)
+        else:
+            command = integrator.enter_fixed_hold(measured, monotonic(), event)
+        self._publish_command(arm, command)
 
     def _on_servo_status(self, arm: str, msg: Int8) -> None:
         self._servo_status[arm] = int(msg.data)
@@ -214,7 +227,11 @@ class TeleopManager(Node):
         if measured is None:
             self._integrator_fault(arm, "joint state unavailable while accepting Servo raw velocity")
             return
-        error = self._integrators[arm].accept_velocity(msg.data, monotonic())
+        integrator = self._integrators[arm]
+        # Settling and fixed hold ignore leftover Servo joint velocity.
+        if integrator.settling or not integrator.integrator_active:
+            return
+        error = integrator.accept_velocity(msg.data, monotonic())
         if error:
             self._integrator_fault(arm, error)
 
@@ -372,8 +389,8 @@ class TeleopManager(Node):
         if measured is None:
             self._integrator_fault(arm, "joint state stale while publishing velocity-integrator command")
             return
-        # Initial hold and every stopped state continuously command measured
-        # position.  Only an actively held GUI input permits integration.
+        # An actively held input integrates qdot. A normal stop settles the
+        # existing lead; initial hold and fixed hold repeat one captured pose.
         motion_active = (
             self._servo_motion_allowed and self._manual_transition == "MANUAL_READY"
             and self.core.active is not None
@@ -473,6 +490,7 @@ class TeleopManager(Node):
             status["velocity_integrator_hold_rad"] = integrator.stop_hold
             status["velocity_integrator_lead_scale"] = integrator.last_lead_scale
             status["velocity_integrator_lead_reprojection_scale"] = integrator.last_lead_reprojection_scale
+            status["stop_settle_max_lead_rad"] = integrator.stop_settle_max_lead_rad
         status["first_real_test_mode"] = bool(self.config["teleop"].get("first_real_test_mode", False))
         status["last_switch_max_q_jump_rad"] = self._last_switch_q_jump_rad[self.core.arm]
         status["fault_state"] = self.core.fault or feedback["fault_state"]

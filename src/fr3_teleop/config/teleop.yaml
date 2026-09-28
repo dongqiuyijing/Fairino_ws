@@ -52,6 +52,13 @@ teleop:
     max_lead_rad: 0.5
     max_timer_dt_s: 0.02
     max_raw_joint_velocity_rad_s: 3.0
+    # After button release, pull the position command toward measured at this
+    # joint speed. 0.25 rad/s closes a 0.09 rad lead in about 0.36 s, and one
+    # 125 Hz step is only 0.002 rad.
+    stop_correction_velocity_rad_s: 0.25
+    stop_hold_tolerance_rad: 0.002
+    stop_settle_timeout_s: 1.0
+    stop_stationary_delta_rad: 0.0004
   stop_on_focus_lost: true
   stop_on_robot_switch: true
   stop_on_frame_switch: true
