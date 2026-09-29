@@ -8,19 +8,19 @@ shipped configuration.
 
 The live dual hardware plugin (`fairino_hardware_dual`) opens one `FRRobot` per
 arm, calls `ServoMoveStart()` on activation, and calls `ServoJ()` from its
-125 Hz `write()` loop.  The installed SDK does expose `StartJOG`, `StopJOG`,
-and `ImmStopJOG`, but a second SDK client would compete with that active servo
-session.  This package never opens an SDK connection: manual motion remains on
-the existing ros2_control position-command path and is enabled only after the
-manager has completed the existing strict controller-ownership and initial-hold
-checks.
+125 Hz `write()` loop while AUTO is active. Stage 1 real manual control is
+Arm A / base / X+ only: the manager deactivates `arm_a_controller`, asks that
+same plugin to cross `ServoMoveEnd` / joint sync / `ServoMoveStart`, and then
+the plugin sends `ServoCart(mode=1)`. This package never opens an SDK
+connection. Arm B manual behaviour is unchanged. The older MoveIt Servo and
+joint-position integrator path remains in the tree and is not on the Arm A
+real manual path.
 
-MoveIt Servo 2.5.9 is installed locally and supports
-`std_msgs/Float64MultiArray` output. The real teleop path receives six safe
-joint velocities from Servo, integrates them into bounded position commands at
-125 Hz, and sends those commands through
-`position_controllers/JointGroupPositionController`; the existing automatic controllers remain position-only
-`joint_trajectory_controller` instances.
+MoveIt Servo and `ServoVelocityIntegrator` are still built and tested. With
+`manual_cartesian.enabled`, Arm A real manual does not publish to them.
+`arm_a_controller` / `arm_b_controller` remain the AUTO
+`joint_trajectory_controller` instances. Stage 1 does not activate
+`arm_a_teleop_controller`.
 
 ## Build and mock launch
 

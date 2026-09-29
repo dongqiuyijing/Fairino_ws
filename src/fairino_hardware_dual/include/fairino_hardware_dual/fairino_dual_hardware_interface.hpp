@@ -19,6 +19,12 @@
 #include <vector>
 #include "libfairino/include/robot.h"
 #include "fairino_msgs/srv/gripper_bridge.hpp"
+#include "fairino_hardware_dual/manual_cartesian.hpp"
+#include "fairino_hardware_dual/manual_trace.hpp"
+#include "std_msgs/msg/float64.hpp"
+#include "std_msgs/msg/int32.hpp"
+#include "std_msgs/msg/string.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
 
 #define CONTROLLER_IP_ADDRESS "192.168.58.2"
@@ -75,15 +81,37 @@ private:
     std::condition_variable cv;
   };
 
-  enum class RuntimeMode {
-    SERVO_ACTIVE,
-    GRIPPER_COMMAND,
-    GRIPPER_WAIT,
-    SERVO_RESTART
+  struct PendingManualRequest {
+    bool enter{false};
+    bool finished{false};
+    bool success{false};
+    std::string message;
+    std::condition_variable cv;
   };
 
   void start_gripper_bridge();
   void stop_gripper_bridge();
+  void start_manual_cartesian_bridge();
+  void clear_manual_command_locked();
+  std::string manual_namespace() const;
+  void publish_runtime_mode();
+  void publish_cartesian_error(int code);
+  void on_manual_velocity(const std_msgs::msg::Float64::SharedPtr msg);
+  void handle_manual_enter(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+  void handle_manual_exit(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+  void wait_for_manual_request(
+    const std::shared_ptr<PendingManualRequest> & pending,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+  bool process_manual_transition();
+  int issue_servocart(const ServoCartCommand & command);
+  int traced_servo_session(bool start);
+  void note_servocart_error(int code);
+  void apply_boundary(const BoundaryOutcome & outcome, const char * action);
+  void finish_manual_request(bool success, const std::string & message);
   void process_pending_gripper();
   void handle_gripper(
     const std::shared_ptr<fairino_msgs::srv::GripperBridge::Request> request,
@@ -112,6 +140,23 @@ private:
   std::mutex _gripper_mutex;
   std::shared_ptr<PendingGripperCommand> _gripper_pending;
   std::atomic<RuntimeMode> _runtime_mode{RuntimeMode::SERVO_ACTIVE};
+  ServoKind _resume_kind{ServoKind::SERVOJ};
+  std::mutex _manual_mutex;
+  double _manual_vx_mm_s{0.0};
+  std::chrono::steady_clock::time_point _manual_command_time{};
+  bool _manual_command_stamped{false};
+  uint64_t _manual_rx_seq{0};
+  ManualTrace _trace;
+  ManualTraceRecord _cart_trace;
+  bool _cartesian_output_inhibited{false};
+  bool _watchdog_logged{false};
+  bool _manual_rx_logged{false};
+  std::chrono::steady_clock::time_point _last_manual_diag_log{};
+  bool _exit_zero_sent{false};
+  int _last_servocart_error{0};
+  std::chrono::steady_clock::time_point _last_servocart_error_log{};
+  std::mutex _manual_request_mutex;
+  std::shared_ptr<PendingManualRequest> _manual_request;
   std::chrono::steady_clock::time_point _gripper_wait_start{};
   std::chrono::steady_clock::time_point _gripper_wait_deadline{};
   std::chrono::steady_clock::time_point _gripper_last_poll{};
@@ -122,6 +167,11 @@ private:
   bool _logged_waiting_gripper{false};
   rclcpp::Node::SharedPtr _gripper_node;
   rclcpp::Service<fairino_msgs::srv::GripperBridge>::SharedPtr _gripper_service;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr _manual_enter_service;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr _manual_exit_service;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr _manual_velocity_sub;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr _runtime_mode_pub;
+  rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr _cartesian_error_pub;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> _gripper_executor;
   std::thread _gripper_spin_thread;
 };

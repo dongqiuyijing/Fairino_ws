@@ -14,6 +14,8 @@ find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(fairino_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 set(FR_SDK_ROOT
   "${CMAKE_CURRENT_SOURCE_DIR}/../frcobot_ros2/fairino_hardware_v3_9_7")
@@ -39,6 +41,8 @@ ament_target_dependencies(fairino_dual_hardware
   pluginlib
   rclcpp
   fairino_msgs
+  std_msgs
+  std_srvs
   rclcpp_lifecycle
 )
 
@@ -58,6 +62,14 @@ install(DIRECTORY include/
 ament_export_include_directories(include)
 ament_export_libraries(fairino_dual_hardware)
 ament_export_dependencies(
-  ament_cmake rclcpp hardware_interface pluginlib rclcpp_lifecycle fairino_msgs)
+  ament_cmake rclcpp hardware_interface pluginlib rclcpp_lifecycle fairino_msgs std_msgs std_srvs)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_manual_cartesian test/test_manual_cartesian.cpp)
+  target_include_directories(test_manual_cartesian PUBLIC include)
+  ament_add_gtest(test_manual_trace test/test_manual_trace.cpp)
+  target_include_directories(test_manual_trace PUBLIC include)
+endif()
 
 ament_package()

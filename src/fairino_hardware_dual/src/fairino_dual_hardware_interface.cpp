@@ -152,6 +152,45 @@ hardware_interface::CallbackReturn FairinoDualHardwareInterface::on_activate(con
     RCLCPP_INFO(rclcpp::get_logger("FairinoDualHardwareInterface"), "Starting ...please wait...");
     //做变量的初始化工作
     _ptr_robot = std::make_unique<FRRobot>();//创建机器人实例
+    _trace.start(_controller_ip);
+    // Configure CNDE before RPC creates the feedback connection.  The v3.9.7
+    // SDK owns this connection and rejects configuration changes after it has
+    // started.  Keep the list limited to fields needed for motion diagnosis;
+    // this does not alter ServoJ/ServoCart control logic.
+    const std::vector<RobotState> realtime_states = {
+        RobotState::ProgramState,
+        RobotState::RobotState,
+        RobotState::MainCode,
+        RobotState::SubCode,
+        RobotState::RobotMode,
+        RobotState::JointCurPos,
+        RobotState::ToolCurPos,
+        RobotState::ActualJointVel,
+        RobotState::TargetTCPCmpSpeed,
+        RobotState::TargetTCPSpeed,
+        RobotState::ActualTCPCmpSpeed,
+        RobotState::ActualTCPSpeed,
+        RobotState::EmergencyStop,
+        RobotState::MotionDone,
+        RobotState::McQueueLen,
+        RobotState::CollisionState,
+        RobotState::SafetyStop0State,
+        RobotState::SafetyStop1State,
+        RobotState::RbtEnableState,
+        RobotState::RobotTime,
+        RobotState::TargetJointPos,
+        RobotState::TargetJointVel,
+        RobotState::TargetTCPPos,
+    };
+    const errno_t realtime_config_ret =
+        _ptr_robot->SetRobotRealtimeStateConfig(realtime_states, 8);
+    if (realtime_config_ret != 0) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("FairinoDualHardwareInterface"),
+            "CNDE feedback configuration failed before RPC, error=%d",
+            realtime_config_ret);
+        return hardware_interface::CallbackReturn::ERROR;
+    }
     for(int i=0;i<6;i++){//初始化变量
         _jnt_position_command[i] = 0;
         _jnt_velocity_command[i] = 0;
@@ -218,8 +257,8 @@ hardware_interface::CallbackReturn FairinoDualHardwareInterface::on_activate(con
 
         // 确保旧运动状态结束
         _ptr_robot->StopMotion();
-        _ptr_robot->ServoMoveEnd();
-        errno_t servo_ret = _ptr_robot->ServoMoveStart();
+        traced_servo_session(false);
+        errno_t servo_ret = traced_servo_session(true);
 
         if (servo_ret != 0) {
             RCLCPP_ERROR(
@@ -231,6 +270,7 @@ hardware_interface::CallbackReturn FairinoDualHardwareInterface::on_activate(con
             return hardware_interface::CallbackReturn::ERROR;
         }
 
+        _resume_kind = ServoKind::SERVOJ;
         _runtime_mode.store(RuntimeMode::SERVO_ACTIVE);
         RCLCPP_INFO(
             rclcpp::get_logger("FairinoDualHardwareInterface"),
@@ -269,7 +309,7 @@ hardware_interface::CallbackReturn FairinoDualHardwareInterface::on_deactivate(c
     // _ptr_robot.release();
     if (_ptr_robot) {
         stop_gripper_bridge();
-        errno_t servo_ret = _ptr_robot->ServoMoveEnd();
+        errno_t servo_ret = traced_servo_session(false);
     
         if (servo_ret != 0) {
             RCLCPP_WARN(
@@ -295,7 +335,14 @@ hardware_interface::return_type FairinoDualHardwareInterface::read(const rclcpp:
         return hardware_interface::return_type::OK;
     }
     JointPos state_data;
+    const auto read_begin = _trace.enabled() ? trace_now() : 0;
     error_t returncode = _ptr_robot->GetActualJointPosDegree(1,&state_data);
+    if (_trace.enabled()) {
+        ManualTraceRecord r;
+        r.begin = read_begin; r.end = trace_now(); r.kind = 3; r.code = returncode;
+        if (returncode == 0) std::copy_n(state_data.jPos, 6, r.pose.begin());
+        _trace.control(r);
+    }
     if(returncode == 0){
         for(int i=0;i<6;i++){
             _jnt_position_state[i] = state_data.jPos[i]/180.0*M_PI;//注意单位转换，moveit统一用弧度
@@ -317,7 +364,81 @@ hardware_interface::return_type FairinoDualHardwareInterface::write(const rclcpp
         return hardware_interface::return_type::OK;
     }
 
+    if (_trace.enabled()) {
+        ManualTraceRecord r;
+        r.begin = r.end = trace_now(); r.kind = 7;
+        r.mode = static_cast<int>(_runtime_mode.load()); _trace.control(r);
+    }
+    if (process_manual_transition()) {
+        return hardware_interface::return_type::OK;
+    }
+
     const RuntimeMode mode = _runtime_mode.load();
+    if (mode == RuntimeMode::MANUAL_CARTESIAN) {
+        const bool gripper_hold = gripper_pending_active();
+        if (gripper_hold) {
+            {
+                std::lock_guard<std::mutex> lock(_manual_mutex);
+                _manual_vx_mm_s = 0.0;
+            }
+            process_pending_gripper();
+            if (_runtime_mode.load() != RuntimeMode::MANUAL_CARTESIAN) {
+                return hardware_interface::return_type::OK;
+            }
+        }
+        double vx = 0.0;
+        double age_ms = 0.0;
+        bool stamped = false;
+        bool inhibited = false;
+        uint64_t rx_seq = 0;
+        {
+            std::lock_guard<std::mutex> lock(_manual_mutex);
+            vx = _manual_vx_mm_s;
+            stamped = _manual_command_stamped;
+            inhibited = _cartesian_output_inhibited;
+            rx_seq = _manual_rx_seq;
+            if (stamped) {
+                age_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - _manual_command_time).count();
+            }
+        }
+        const WritePlan plan = plan_manual_cartesian_write(
+            period.seconds(), vx, age_ms, stamped, inhibited);
+        const bool fresh = stamped && std::isfinite(age_ms) && age_ms >= 0.0 &&
+            age_ms <= kCommandWatchdogMs;
+        if (plan.watchdog_zeroed && !_watchdog_logged) {
+            _watchdog_logged = true;
+            RCLCPP_WARN(
+                rclcpp::get_logger("FairinoDualHardwareInterface"),
+                "[MANUAL CART] watchdog fresh -> stale age_ms=%.1f vx=%.3f",
+                age_ms, vx);
+        } else if (!plan.watchdog_zeroed) {
+            _watchdog_logged = false;
+        }
+        _cart_trace = {};
+        _cart_trace.rx = rx_seq; _cart_trace.vx = vx; _cart_trace.age = age_ms;
+        _cart_trace.period = period.seconds();
+        _cart_trace.reason = gripper_hold ? 5 : inhibited ? 4 : !stamped ? 2 :
+            !fresh ? 3 : vx == 0.0 ? 1 : 0;
+        const int ret = issue_servocart(plan.cart);
+        const auto diag_now = std::chrono::steady_clock::now();
+        if (!_trace.enabled() && (_last_manual_diag_log.time_since_epoch().count() == 0 ||
+            diag_now - _last_manual_diag_log >= kRestartLogThrottle)) {
+            _last_manual_diag_log = diag_now;
+            RCLCPP_INFO(
+                rclcpp::get_logger("FairinoDualHardwareInterface"),
+                "[MANUAL CART] vx=%.3f age_ms=%.1f fresh=%d dt=%.6f dx=%.6f "
+                "pose=[%.6f,%.6f,%.6f,%.6f,%.6f,%.6f] mode=%d "
+                "pos_gain=[1,1,1,1,1,1] exaxis=[0,0,0,0] acc=0 vel=60 filterT=0 gain=0 "
+                "cmdT=%.6f ret=%d inhibited=%d gripper_hold=%d servoJ=0",
+                vx, age_ms, fresh ? 1 : 0, plan.cart.cmd_t_s, plan.cart.x_mm,
+                plan.cart.x_mm, plan.cart.y_mm, plan.cart.z_mm,
+                plan.cart.rx_deg, plan.cart.ry_deg, plan.cart.rz_deg,
+                plan.cart.mode, plan.cart.cmd_t_s, ret,
+                inhibited ? 1 : 0, gripper_hold ? 1 : 0);
+        }
+        return hardware_interface::return_type::OK;
+    }
     if (mode != RuntimeMode::SERVO_ACTIVE) {
         process_pending_gripper();
         return hardware_interface::return_type::OK;
@@ -344,7 +465,13 @@ hardware_interface::return_type FairinoDualHardwareInterface::write(const rclcpp
         }
         //RCLCPP_INFO(rclcpp::get_logger("FairinoDualHardwareInterface"), "ServoJ下发位置:%f,%f,%f,%f,%f,%f",\
             cmd.jPos[0],cmd.jPos[1],cmd.jPos[2],cmd.jPos[3],cmd.jPos[4],cmd.jPos[5]);
+        const auto joint_begin = _trace.enabled() ? trace_now() : 0;
         int returncode = _ptr_robot->ServoJ(&cmd,&extcmd,0,0,0.008,0,0);
+        if (_trace.enabled()) {
+            ManualTraceRecord r;
+            r.begin = joint_begin; r.end = trace_now(); r.kind = 6; r.code = returncode;
+            r.cmd_t = 0.008; std::copy_n(cmd.jPos, 6, r.pose.begin()); _trace.control(r);
+        }
         if(returncode != 0){
             RCLCPP_INFO(rclcpp::get_logger("FairinoDualHardwareInterface"), "ServoJ指令下发错误,错误码:%d",returncode);
         }
@@ -377,6 +504,7 @@ void FairinoDualHardwareInterface::start_gripper_bridge()
             std::placeholders::_1,
             std::placeholders::_2));
     _gripper_executor = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    start_manual_cartesian_bridge();
     _gripper_executor->add_node(_gripper_node);
     _gripper_spin_thread = std::thread([this]() {
         _gripper_executor->spin();
@@ -404,6 +532,21 @@ void FairinoDualHardwareInterface::stop_gripper_bridge()
             _gripper_pending->finished = true;
             _gripper_pending->cv.notify_all();
             _gripper_pending.reset();
+        }
+    }
+    _manual_enter_service.reset();
+    _manual_exit_service.reset();
+    _manual_velocity_sub.reset();
+    _runtime_mode_pub.reset();
+    _cartesian_error_pub.reset();
+    {
+        std::lock_guard<std::mutex> lock(_manual_request_mutex);
+        if (_manual_request) {
+            _manual_request->success = false;
+            _manual_request->message = "SERVO_ACTIVE: hardware deactivating";
+            _manual_request->finished = true;
+            _manual_request->cv.notify_all();
+            _manual_request.reset();
         }
     }
     _gripper_service.reset();
@@ -446,7 +589,9 @@ void FairinoDualHardwareInterface::handle_gripper(
             response->message = "gripper command busy";
             return;
         }
-        if (_runtime_mode.load() != RuntimeMode::SERVO_ACTIVE) {
+        const RuntimeMode mode = _runtime_mode.load();
+        if (mode != RuntimeMode::SERVO_ACTIVE &&
+            mode != RuntimeMode::MANUAL_CARTESIAN) {
             response->error_code = -1;
             response->message = "gripper command busy";
             return;
@@ -595,7 +740,8 @@ void FairinoDualHardwareInterface::begin_gripper_command(
     if (cmd->command != "activate" && cmd->command != "reset" &&
         cmd->command != "move") {
         finish_gripper_pending(-1, "unknown gripper command");
-        _runtime_mode.store(RuntimeMode::SERVO_ACTIVE);
+        _runtime_mode.store(mode_after_gripper(_resume_kind));
+        publish_runtime_mode();
         return;
     }
 
@@ -609,7 +755,7 @@ void FairinoDualHardwareInterface::begin_gripper_command(
                 RCLCPP_INFO(
                     rclcpp::get_logger("FairinoDualHardwareInterface"),
                     "[GRIPPER ARBITER] READY_WAIT command_state_error=%.6f rad "
-                    "threshold=%.6f rad timeout_remaining_ms=%ld; ServoJ continues",
+                    "threshold=%.6f rad timeout_remaining_ms=%ld; current servo command continues",
                     max_err, kArmSettledThresholdRad, static_cast<long>(remaining));
             }
             return;
@@ -621,13 +767,14 @@ void FairinoDualHardwareInterface::begin_gripper_command(
             max_err, kArmSettledThresholdRad
         );
         finish_gripper_pending(-1, "arm command did not settle before gripper command timeout");
-        _runtime_mode.store(RuntimeMode::SERVO_ACTIVE);
+        _runtime_mode.store(mode_after_gripper(_resume_kind));
+        publish_runtime_mode();
         return;
     }
 
     _runtime_mode.store(RuntimeMode::GRIPPER_COMMAND);
 
-    const errno_t end_ret = _ptr_robot->ServoMoveEnd();
+    const errno_t end_ret = traced_servo_session(false);
     RCLCPP_INFO(
         rclcpp::get_logger("FairinoDualHardwareInterface"),
         "[GRIPPER ARBITER] ServoMoveEnd ret=%d",
@@ -635,7 +782,8 @@ void FairinoDualHardwareInterface::begin_gripper_command(
     );
     if (end_ret != 0) {
         finish_gripper_pending(end_ret, "ServoMoveEnd failed");
-        _runtime_mode.store(RuntimeMode::SERVO_ACTIVE);
+        _runtime_mode.store(mode_after_gripper(_resume_kind));
+        publish_runtime_mode();
         return;
     }
 
@@ -818,7 +966,7 @@ void FairinoDualHardwareInterface::restart_servo_after_gripper()
         return;
     }
 
-    const errno_t start_ret = _ptr_robot->ServoMoveStart();
+    const errno_t start_ret = traced_servo_session(true);
     RCLCPP_INFO(
         rclcpp::get_logger("FairinoDualHardwareInterface"),
         "[GRIPPER ARBITER] ServoMoveStart ret=%d",
@@ -836,10 +984,20 @@ void FairinoDualHardwareInterface::restart_servo_after_gripper()
         return;
     }
 
-    _runtime_mode.store(RuntimeMode::SERVO_ACTIVE);
+    const RuntimeMode restored = mode_after_gripper(_resume_kind);
+    _runtime_mode.store(restored);
+    publish_runtime_mode();
+    if (restored == RuntimeMode::MANUAL_CARTESIAN) {
+        std::lock_guard<std::mutex> lock(_manual_mutex);
+        _manual_vx_mm_s = 0.0;
+        _manual_command_time = std::chrono::steady_clock::now();
+        _manual_command_stamped = true;
+        _cartesian_output_inhibited = false;
+    }
     RCLCPP_INFO(
         rclcpp::get_logger("FairinoDualHardwareInterface"),
-        "[GRIPPER ARBITER] ServoJ resumed"
+        "[GRIPPER ARBITER] servo resumed mode=%s",
+        runtime_mode_name(restored)
     );
 
     const int code = _gripper_result_code;
@@ -849,6 +1007,370 @@ void FairinoDualHardwareInterface::restart_servo_after_gripper()
     finish_gripper_pending(code, message);
 }
 
+
+std::string FairinoDualHardwareInterface::manual_namespace() const
+{
+    const std::string suffix = "/fairino_gripper/command";
+    if (_gripper_service_name.size() >= suffix.size() &&
+        _gripper_service_name.compare(
+            _gripper_service_name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        return _gripper_service_name.substr(0, _gripper_service_name.size() - suffix.size()) +
+            "/fairino_manual";
+    }
+    return "/" + _gripper_node_name + "/manual";
+}
+
+void FairinoDualHardwareInterface::clear_manual_command_locked()
+{
+    _manual_vx_mm_s = 0.0;
+    _manual_command_time = std::chrono::steady_clock::now();
+    _manual_command_stamped = true;
+    _cartesian_output_inhibited = false;
+    _watchdog_logged = false;
+    _manual_rx_logged = false;
+}
+
+void FairinoDualHardwareInterface::publish_runtime_mode()
+{
+    if (!_runtime_mode_pub) {
+        return;
+    }
+    std_msgs::msg::String msg;
+    msg.data = runtime_mode_name(_runtime_mode.load());
+    _runtime_mode_pub->publish(msg);
+}
+
+void FairinoDualHardwareInterface::publish_cartesian_error(int code)
+{
+    if (!_cartesian_error_pub) {
+        return;
+    }
+    std_msgs::msg::Int32 msg;
+    msg.data = code;
+    _cartesian_error_pub->publish(msg);
+}
+
+void FairinoDualHardwareInterface::start_manual_cartesian_bridge()
+{
+    const std::string ns = manual_namespace();
+    _manual_enter_service = _gripper_node->create_service<std_srvs::srv::Trigger>(
+        ns + "/enter",
+        std::bind(
+            &FairinoDualHardwareInterface::handle_manual_enter,
+            this, std::placeholders::_1, std::placeholders::_2));
+    _manual_exit_service = _gripper_node->create_service<std_srvs::srv::Trigger>(
+        ns + "/exit",
+        std::bind(
+            &FairinoDualHardwareInterface::handle_manual_exit,
+            this, std::placeholders::_1, std::placeholders::_2));
+    _manual_velocity_sub = _gripper_node->create_subscription<std_msgs::msg::Float64>(
+        ns + "/base_x_velocity_mm_s",
+        rclcpp::QoS(10),
+        std::bind(&FairinoDualHardwareInterface::on_manual_velocity, this, std::placeholders::_1));
+    auto latched = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+    _runtime_mode_pub = _gripper_node->create_publisher<std_msgs::msg::String>(
+        ns + "/runtime_mode", latched);
+    _cartesian_error_pub = _gripper_node->create_publisher<std_msgs::msg::Int32>(
+        ns + "/last_error", latched);
+    publish_runtime_mode();
+    publish_cartesian_error(0);
+    RCLCPP_INFO(
+        rclcpp::get_logger("FairinoDualHardwareInterface"),
+        "[MANUAL CARTESIAN] bridge %s (enter/exit + base X velocity, watchdog %.0f ms)",
+        ns.c_str(), kCommandWatchdogMs);
+}
+
+void FairinoDualHardwareInterface::on_manual_velocity(
+    const std_msgs::msg::Float64::SharedPtr msg)
+{
+    const double received = msg->data;
+    bool log_rx = false;
+    {
+        std::lock_guard<std::mutex> lock(_manual_mutex);
+        const double vx = clamp_manual_linear_mm_s(received);
+        if (!_manual_rx_logged && vx != 0.0) {
+            _manual_rx_logged = true;
+            log_rx = true;
+        }
+        _manual_vx_mm_s = vx;
+        _manual_command_time = std::chrono::steady_clock::now();
+        _manual_command_stamped = true;
+        ++_manual_rx_seq;
+        if (_trace.enabled()) {
+            ManualTraceRecord r;
+            r.begin = r.end = trace_now(); r.kind = 1; r.rx = _manual_rx_seq;
+            r.vx = vx; r.pose[0] = received; _trace.input(r);
+        }
+    }
+    if (log_rx) {
+        RCLCPP_INFO(
+            rclcpp::get_logger("FairinoDualHardwareInterface"),
+            "[MANUAL RX] vx=%.1f", received);
+    }
+}
+
+void FairinoDualHardwareInterface::wait_for_manual_request(
+    const std::shared_ptr<PendingManualRequest> & pending,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+    std::unique_lock<std::mutex> lock(_manual_request_mutex);
+    const bool finished = pending->cv.wait_for(
+        lock, std::chrono::seconds(5), [&pending]() { return pending->finished; });
+    if (!finished) {
+        // Drop a request write() has not started. Once MANUAL_ENTERING is set,
+        // the control thread owns the session change and must finish it.
+        if (_manual_request == pending &&
+            _runtime_mode.load() == RuntimeMode::SERVO_ACTIVE) {
+            _manual_request.reset();
+        }
+        response->success = false;
+        response->message = std::string(runtime_mode_name(_runtime_mode.load())) +
+            ": manual transition timed out";
+        return;
+    }
+    response->success = pending->success;
+    response->message = pending->message;
+}
+
+void FairinoDualHardwareInterface::handle_manual_enter(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+    (void)request;
+    auto pending = std::make_shared<PendingManualRequest>();
+    pending->enter = true;
+    {
+        std::lock_guard<std::mutex> lock(_manual_request_mutex);
+        if (_manual_request) {
+            response->success = false;
+            response->message = "SERVO_ACTIVE: manual transition busy";
+            return;
+        }
+        if (_runtime_mode.load() != RuntimeMode::SERVO_ACTIVE) {
+            response->success = false;
+            response->message = std::string(runtime_mode_name(_runtime_mode.load())) +
+                ": enter requires SERVO_ACTIVE";
+            return;
+        }
+        _manual_request = pending;
+        _exit_zero_sent = false;
+    }
+    wait_for_manual_request(pending, response);
+}
+
+void FairinoDualHardwareInterface::handle_manual_exit(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+    (void)request;
+    auto pending = std::make_shared<PendingManualRequest>();
+    pending->enter = false;
+    {
+        std::lock_guard<std::mutex> lock(_manual_request_mutex);
+        if (_manual_request) {
+            response->success = false;
+            response->message = "manual transition busy";
+            return;
+        }
+        const RuntimeMode mode = _runtime_mode.load();
+        if (mode != RuntimeMode::MANUAL_CARTESIAN && mode != RuntimeMode::MANUAL_EXITING) {
+            response->success = false;
+            response->message = std::string(runtime_mode_name(mode)) +
+                ": exit requires MANUAL_CARTESIAN";
+            return;
+        }
+        _manual_request = pending;
+    }
+    wait_for_manual_request(pending, response);
+}
+
+void FairinoDualHardwareInterface::finish_manual_request(
+    bool success, const std::string & message)
+{
+    std::lock_guard<std::mutex> lock(_manual_request_mutex);
+    if (!_manual_request) {
+        return;
+    }
+    _manual_request->success = success;
+    _manual_request->message = message;
+    _manual_request->finished = true;
+    _manual_request->cv.notify_all();
+    _manual_request.reset();
+}
+
+void FairinoDualHardwareInterface::apply_boundary(
+    const BoundaryOutcome & outcome, const char * action)
+{
+    _resume_kind = outcome.resume_kind;
+    _runtime_mode.store(outcome.mode);
+    publish_runtime_mode();
+    RCLCPP_INFO(
+        rclcpp::get_logger("FairinoDualHardwareInterface"),
+        "[MANUAL CARTESIAN] %s -> %s success=%d",
+        action, runtime_mode_name(outcome.mode), outcome.success ? 1 : 0);
+}
+
+int FairinoDualHardwareInterface::issue_servocart(const ServoCartCommand & command)
+{
+    DescPose desc;
+    desc.tran.x = command.x_mm;
+    desc.tran.y = command.y_mm;
+    desc.tran.z = command.z_mm;
+    desc.rpy.rx = command.rx_deg;
+    desc.rpy.ry = command.ry_deg;
+    desc.rpy.rz = command.rz_deg;
+    ExaxisPos exaxis(0.0, 0.0, 0.0, 0.0);
+    float pos_gain[6] = {1.f, 1.f, 1.f, 1.f, 1.f, 1.f};
+    const auto begin = _trace.enabled() ? trace_now() : 0;
+    if (_trace.enabled()) {
+        auto r = _cart_trace;
+        r.begin = r.end = begin; r.kind = 8; r.mode = command.mode;
+        r.cmd_t = static_cast<float>(command.cmd_t_s);
+        r.pose = {command.x_mm, command.y_mm, command.z_mm,
+                  command.rx_deg, command.ry_deg, command.rz_deg};
+        _trace.control(r);
+    }
+    const int code = _ptr_robot->ServoCart(
+        command.mode, &desc, exaxis, pos_gain, 0.f, 60.f,
+        static_cast<float>(command.cmd_t_s), 0.f, 0.f);
+    if (_trace.enabled()) {
+        auto r = _cart_trace;
+        r.begin = begin; r.end = trace_now(); r.kind = 2;
+        r.mode = command.mode; r.code = code;
+        r.cmd_t = static_cast<float>(command.cmd_t_s);
+        r.pose = {command.x_mm, command.y_mm, command.z_mm,
+                  command.rx_deg, command.ry_deg, command.rz_deg};
+        _trace.control(r);
+    }
+    if (code != 0) {
+        note_servocart_error(code);
+    }
+    return code;
+}
+
+int FairinoDualHardwareInterface::traced_servo_session(bool start)
+{
+    const auto begin = _trace.enabled() ? trace_now() : 0;
+    if (_trace.enabled()) {
+        ManualTraceRecord r;
+        r.begin = r.end = begin; r.kind = start ? 9 : 10;
+        r.mode = static_cast<int>(_runtime_mode.load()); _trace.control(r);
+    }
+    const int ret = start ? _ptr_robot->ServoMoveStart() : _ptr_robot->ServoMoveEnd();
+    if (_trace.enabled()) {
+        ManualTraceRecord r;
+        r.begin = begin; r.end = trace_now(); r.kind = start ? 4 : 5;
+        r.mode = static_cast<int>(_runtime_mode.load()); r.code = ret;
+        _trace.control(r);
+    }
+    return ret;
+}
+
+void FairinoDualHardwareInterface::note_servocart_error(int code)
+{
+    {
+        std::lock_guard<std::mutex> lock(_manual_mutex);
+        _manual_vx_mm_s = 0.0;
+        _cartesian_output_inhibited = true;
+        _last_servocart_error = code;
+    }
+    publish_cartesian_error(code);
+    const auto now = std::chrono::steady_clock::now();
+    if (now - _last_servocart_error_log >= kRestartLogThrottle) {
+        _last_servocart_error_log = now;
+        RCLCPP_ERROR(
+            rclcpp::get_logger("FairinoDualHardwareInterface"),
+            "[MANUAL CARTESIAN] ServoCart error=%d; nonzero output inhibited",
+            code);
+    }
+}
+
+bool FairinoDualHardwareInterface::process_manual_transition()
+{
+    std::shared_ptr<PendingManualRequest> request;
+    {
+        std::lock_guard<std::mutex> lock(_manual_request_mutex);
+        request = _manual_request;
+    }
+    const RuntimeMode mode = _runtime_mode.load();
+    if (!request && mode != RuntimeMode::MANUAL_EXITING &&
+        mode != RuntimeMode::MANUAL_ENTERING) {
+        return false;
+    }
+
+    if (request && request->enter && mode == RuntimeMode::SERVO_ACTIVE) {
+        _runtime_mode.store(RuntimeMode::MANUAL_ENTERING);
+        publish_runtime_mode();
+        {
+            std::lock_guard<std::mutex> lock(_manual_mutex);
+            clear_manual_command_locked();
+        }
+        const errno_t end_ret = traced_servo_session(false);
+        RCLCPP_INFO(
+            rclcpp::get_logger("FairinoDualHardwareInterface"),
+            "[MANUAL CARTESIAN] enter ServoMoveEnd ret=%d", end_ret);
+        const bool sync_ok = end_ret == 0 &&
+            sync_joints_from_actual("synchronized joints before ServoCart");
+        errno_t start_ret = 0;
+        if (end_ret == 0 && sync_ok) {
+            start_ret = traced_servo_session(true);
+            RCLCPP_INFO(
+                rclcpp::get_logger("FairinoDualHardwareInterface"),
+                "[MANUAL CARTESIAN] enter ServoMoveStart ret=%d", start_ret);
+        }
+        const BoundaryOutcome outcome = enter_manual_cartesian_outcome(
+            end_ret, sync_ok, start_ret);
+        apply_boundary(outcome, "enter");
+        finish_manual_request(outcome.success, boundary_message(outcome));
+        return true;
+    }
+
+    if (request && !request->enter && mode == RuntimeMode::MANUAL_CARTESIAN) {
+        {
+            std::lock_guard<std::mutex> lock(_manual_mutex);
+            _manual_vx_mm_s = 0.0;
+            _manual_command_time = std::chrono::steady_clock::now();
+            _manual_command_stamped = true;
+        }
+        _exit_zero_sent = false;
+        _runtime_mode.store(RuntimeMode::MANUAL_EXITING);
+        publish_runtime_mode();
+    }
+
+    if (_runtime_mode.load() == RuntimeMode::MANUAL_EXITING && !_exit_zero_sent) {
+        ServoCartCommand zero;
+        zero.cmd_t_s = kNominalCommandPeriodS;
+        zero.mode = 1;
+        _cart_trace = {}; _cart_trace.reason = 6;
+        issue_servocart(zero);
+        _exit_zero_sent = true;
+        return true;
+    }
+
+    if (_runtime_mode.load() == RuntimeMode::MANUAL_EXITING && _exit_zero_sent) {
+        const errno_t end_ret = traced_servo_session(false);
+        RCLCPP_INFO(
+            rclcpp::get_logger("FairinoDualHardwareInterface"),
+            "[MANUAL CARTESIAN] exit ServoMoveEnd ret=%d", end_ret);
+        const bool sync_ok = end_ret == 0 &&
+            sync_joints_from_actual("synchronized joints before ServoJ");
+        errno_t start_ret = 0;
+        if (end_ret == 0 && sync_ok) {
+            start_ret = traced_servo_session(true);
+            RCLCPP_INFO(
+                rclcpp::get_logger("FairinoDualHardwareInterface"),
+                "[MANUAL CARTESIAN] exit ServoMoveStart ret=%d", start_ret);
+        }
+        const BoundaryOutcome outcome = exit_manual_cartesian_outcome(
+            end_ret, sync_ok, start_ret);
+        apply_boundary(outcome, "exit");
+        finish_manual_request(outcome.success, boundary_message(outcome));
+        _exit_zero_sent = false;
+        return true;
+    }
+
+    return false;
+}
 
 }//end namesapce
 

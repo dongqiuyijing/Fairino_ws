@@ -9,6 +9,8 @@ from action_msgs.msg import GoalStatus, GoalStatusArray
 from builtin_interfaces.msg import Duration
 from controller_manager_msgs.srv import ListControllers, SwitchController
 
+from .stage1_cartesian import controller_pair_state, switch_lists
+
 
 class AutoTrajectoryMonitor:
     """Conservative AUTO activity detector using action, JTC and measured state."""
@@ -61,8 +63,10 @@ class AutoTrajectoryMonitor:
 class ControllerManagerClient:
     """Non-blocking strict switch client. Success callback is the ownership grant."""
 
-    def __init__(self, node, arms: dict[str, dict], monitor: AutoTrajectoryMonitor) -> None:
+    def __init__(self, node, arms: dict[str, dict], monitor: AutoTrajectoryMonitor,
+                 cartesian_arm_a: bool = False) -> None:
         self._node, self._arms, self._monitor = node, arms, monitor
+        self._cartesian_arm_a = cartesian_arm_a
         self._list = node.create_client(ListControllers, "/controller_manager/list_controllers")
         self._switch = node.create_client(SwitchController, "/controller_manager/switch_controller")
 
@@ -91,10 +95,10 @@ class ControllerManagerClient:
     def _pair_state(self, arm: str, response) -> str:
         if response is None: return "UNKNOWN"
         states = {item.name: item.state for item in response.controller}
-        spec = self._arms[arm]; auto, manual = states.get(spec["auto_controller"]), states.get(spec["teleop_controller"])
-        if auto == "active" and manual == "inactive": return "AUTO"
-        if auto == "inactive" and manual == "active": return "MANUAL"
-        return "FAULT"
+        spec = self._arms[arm]
+        return controller_pair_state(
+            arm, states.get(spec["auto_controller"]), states.get(spec["teleop_controller"]),
+            self._cartesian_arm_a)
 
     def _switch_if_pair(self, future, arm: str, manual: bool, callback: Callable[[bool, str], None]) -> None:
         state = self._pair_state(arm, future.result())
@@ -102,8 +106,10 @@ class ControllerManagerClient:
         if state != expected:
             callback(False, f"controller pair not in expected {expected} state: {state}"); return
         spec = self._arms[arm]; request = SwitchController.Request()
-        request.activate_controllers = [spec["teleop_controller"] if manual else spec["auto_controller"]]
-        request.deactivate_controllers = [spec["auto_controller"] if manual else spec["teleop_controller"]]
+        activate, deactivate = switch_lists(
+            arm, manual, self._cartesian_arm_a, spec["auto_controller"], spec["teleop_controller"])
+        request.activate_controllers = activate
+        request.deactivate_controllers = deactivate
         request.strictness = SwitchController.Request.STRICT
         request.activate_asap = False
         request.timeout = Duration(sec=2)

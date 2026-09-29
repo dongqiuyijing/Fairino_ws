@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from math import pi
+from math import isfinite, pi
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -12,18 +12,39 @@ from ament_index_python.packages import get_package_share_directory
 import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import TwistStamped
-from std_msgs.msg import Float64MultiArray, Int8, String
+from std_msgs.msg import Float64, Float64MultiArray, Int8, Int32, String
+from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener, TransformException
 import yaml
 
 from .core import ControlCore, MockBackend, Motion, SourceRejected
+from .manual_trace import from_environment, record as trace_record
 from .controller_manager_client import AutoTrajectoryMonitor, ControllerManagerClient
 from .gripper_bridge import GripperBridgeClient
 from .initial_hold import InitialHoldGate
 from .robot_state import FeedbackCache
 from .servo_position_accumulator import ServoVelocityIntegrator, VelocityIntegratorConfig
+from .stage1_cartesian import (
+    is_stage1_motion,
+    manual_namespace,
+    stage1_configured,
+)
+
+
+def _stage1_on(node: Any) -> bool:
+    """Harnesses that call manager methods directly do not construct Stage 1."""
+    return bool(getattr(node, "_stage1", False))
+
+
+def _stage1_servo(node: Any) -> bool:
+    if not _stage1_on(node):
+        return False
+    config = getattr(node, "config", None)
+    teleop = config.get("teleop", {}) if isinstance(config, dict) else {}
+    return teleop.get("backend") == "servo"
 
 
 def load_config(path: str = "") -> dict[str, Any]:
@@ -40,6 +61,7 @@ class TeleopManager(Node):
 
     def __init__(self) -> None:
         super().__init__("fr3_teleop_manager")
+        self._manual_trace = from_environment()
         self.declare_parameter("config_file", "")
         self.declare_parameter("backend", "")
         config = load_config(str(self.get_parameter("config_file").value))
@@ -51,7 +73,15 @@ class TeleopManager(Node):
             raise RuntimeError(f"unsupported teleop backend: {backend_name}")
         self._servo_publishers: dict[str, Any] = {}
         self._servo_motion_allowed = bool(config["teleop"].get("allow_real_motion", False))
-        if backend_name == "servo":
+        self._stage1 = stage1_configured(config)
+        self._stage1_pub = None
+        self._enter_client = None
+        self._exit_client = None
+        self._hardware_mode = ""
+        self._exit_zero_timer = None
+        if backend_name == "servo" and self._stage1:
+            backend = _Stage1CommandBackend()
+        elif backend_name == "servo":
             backend = _ServoTopicBackend(self, config, self._servo_motion_allowed)
         else:
             backend = MockBackend()
@@ -83,7 +113,8 @@ class TeleopManager(Node):
                 desired_error_rad=float(safety["auto_idle_desired_error_rad"]),
                 stationary_delta_rad=float(safety["auto_idle_stationary_delta_rad"]),
                 task_nodes=tuple(safety["known_task_executor_nodes"]))
-            self._controller_client = ControllerManagerClient(self, config["robots"], self._auto_monitor)
+            self._controller_client = ControllerManagerClient(
+                self, config["robots"], self._auto_monitor, cartesian_arm_a=self._stage1)
             velocity_cfg = config["teleop"]["velocity_integrator"]
             integrator_cfg = VelocityIntegratorConfig(
                 max_lead_rad=float(velocity_cfg["max_lead_rad"]),
@@ -122,6 +153,19 @@ class TeleopManager(Node):
                     f"/{spec['auto_controller']}/controller_state",
                     lambda msg, key=arm: self._auto_monitor.note_controller_state(key, msg), 20,
                 )
+        if self._stage1:
+            manual_ns = manual_namespace(str(config["robots"]["arm_a"]["gripper_service"]))
+            self._stage1_pub = self.create_publisher(Float64, f"{manual_ns}/base_x_velocity_mm_s", 10)
+            self._enter_client = self.create_client(Trigger, f"{manual_ns}/enter")
+            self._exit_client = self.create_client(Trigger, f"{manual_ns}/exit")
+            latched = QoSProfile(
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            self.create_subscription(String, f"{manual_ns}/runtime_mode", self._on_hardware_mode, latched)
+            self.create_subscription(Int32, f"{manual_ns}/last_error", self._on_stage1_error, latched)
         if bool(config["teleop"].get("allow_real_gripper_service", False)):
             for arm, spec in config["robots"].items():
                 self._grippers[arm] = GripperBridgeClient(
@@ -139,6 +183,7 @@ class TeleopManager(Node):
         )
 
     def _on_command(self, msg: String) -> None:
+        trace_record(self, "command_received", raw=msg.data)
         try:
             data = json.loads(msg.data)
             if not isinstance(data, dict):
@@ -146,10 +191,25 @@ class TeleopManager(Node):
             # Stop the integrator before ControlCore emits its zero Twist.
             # A normal stop keeps the last position command and settles; it
             # must not be overwritten by a later raw velocity sample.
+            if data.get("type") == "select_arm" and _stage1_servo(self) and self._manual_transition not in {"AUTO", "MOCK", "DENIED"}:
+                raise ValueError("disable Arm A manual before selecting another arm")
             if data.get("type") in {"stop", "release", "select_arm", "set_frame", "set_speed"}:
-                self._hold_integrator(self.core.arm, str(data.get("type")))
+                if _stage1_servo(self) and self.core.arm == "arm_a":
+                    if data.get("type") in {"stop", "release"}:
+                        # Only operator-stop bypasses ownership. Validate before
+                        # publishing so an ignored foreign release cannot zero motion.
+                        if not (data.get("type") == "stop" and
+                                str(data.get("reason", "operator-stop")) == "operator-stop"):
+                            self.core._reject_if_foreign(data)
+                        self.core.command(data)
+                        self._publish_stage1_velocity(0.0)
+                        return
+                else:
+                    self._hold_integrator(self.core.arm, str(data.get("type")))
             if data.get("type") == "enable" and self.config["teleop"].get("backend") == "servo":
                 self._handle_enable(data)
+            elif data.get("type") == "motion" and _stage1_servo(self):
+                self._handle_stage1_motion(data)
             elif data.get("type") == "motion":
                 if not self._manual_ready:
                     # GUI repeats can arrive after an asynchronous safety
@@ -175,11 +235,19 @@ class TeleopManager(Node):
             else:
                 self.core.command(data)
         except SourceRejected as exc:
+            trace_record(self, "source_rejected", reason=str(exc))
             self.get_logger().warning(f"teleop source rejected: {exc}")
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            if _stage1_servo(self):
+                self._publish_stage1_velocity(0.0)
             self.core._stop("invalid-command")
             self.core.fault = str(exc)
             self.get_logger().error(f"teleop command rejected: {exc}")
+        finally:
+            trace_record(self, "command_finished", active=repr(self.core.active),
+                         source=getattr(self.core, "active_input_source", None),
+                         stop_reason=getattr(self.core, "last_stop_reason", None),
+                         fault=self.core.fault)
 
     def _measured_for_arm(self, arm: str) -> list[float] | None:
         values = self._feedback.status(
@@ -212,6 +280,8 @@ class TeleopManager(Node):
         self._publish_command(arm, command)
 
     def _on_servo_status(self, arm: str, msg: Int8) -> None:
+        if _stage1_on(self) and arm == "arm_a":
+            return
         self._servo_status[arm] = int(msg.data)
         # Humble: -1 INVALID, 2 singularity halt, 4 collision halt, 5 joint bound.
         # 1/3 are deceleration warnings and 6 means leaving singularity.
@@ -220,6 +290,8 @@ class TeleopManager(Node):
 
     def _on_servo_raw(self, arm: str, msg: Float64MultiArray) -> None:
         """Consume only raw Servo output; final JGPC output remains manager-owned."""
+        if _stage1_on(self) and arm == "arm_a":
+            return
         if (not self._servo_motion_allowed or arm != self.core.arm or
                 self._manual_transition != "MANUAL_READY" or self.core.active is None):
             return
@@ -259,6 +331,9 @@ class TeleopManager(Node):
     def _handle_enable(self, data: dict[str, Any]) -> None:
         """Acquire/release controller ownership; no nonzero output is implied."""
         requested = bool(data.get("value", False))
+        if _stage1_on(self):
+            self._handle_stage1_enable(requested, data)
+            return
         if not requested:
             self._cancel_hold(self.core.arm)
             self._hold_integrator(self.core.arm, "manual-release")
@@ -297,6 +372,9 @@ class TeleopManager(Node):
 
     def _on_fault_recovery_pair_state(self, state: str) -> None:
         """Release TELEOP only when it is confirmed active; AUTO is already safe."""
+        if stage1_configured(getattr(self, "config", None)) and getattr(self.core, "arm", "") == "arm_a":
+            self._recover_stage1(state)
+            return
         arm = self.core.arm
         if state == "AUTO":
             self._on_fault_recovery_auto(True, "automatic controller already active")
@@ -320,6 +398,9 @@ class TeleopManager(Node):
     def _on_fault_recovery_manual_switch(self, ok: bool, message: str) -> None:
         if not ok:
             self._fault_recovery_failed(f"controller MANUAL request failed: {message}")
+            return
+        if _stage1_servo(self):
+            self._on_stage1_controllers_off(True, message)
             return
         self._on_manual_switch(ok, message)
 
@@ -383,6 +464,8 @@ class TeleopManager(Node):
         if self.config["teleop"].get("backend") != "servo":
             return
         arm = self.core.arm
+        if _stage1_on(self) and arm == "arm_a":
+            return
         if self._manual_transition not in {"HOLD_PENDING", "MANUAL_READY"}:
             return
         measured = self._measured_for_arm(arm)
@@ -411,6 +494,10 @@ class TeleopManager(Node):
             return
         self._shutdown_started = True
         self.core.command({"type": "stop", "reason": "manager-shutdown"})
+        if _stage1_on(self) and self.core.arm == "arm_a" and self._manual_transition in {
+                "HOLD_PENDING", "MANUAL_READY", "RELEASING", "FAULT", "REQUESTING"}:
+            self._shutdown_stage1()
+            return
         if self.config["teleop"].get("backend") != "servo":
             return
         arm = self.core.arm
@@ -471,6 +558,7 @@ class TeleopManager(Node):
 
     def _tick(self) -> None:
         self.core.tick()
+        self._refresh_stage1_velocity()
         self._update_tcp_tf()
         status = self.core.status()
         timeout = float(self.config["safety"]["robot_state_timeout_ms"]) / 1000.0
@@ -496,9 +584,257 @@ class TeleopManager(Node):
         status["fault_state"] = self.core.fault or feedback["fault_state"]
         status["robot_state_source"] = "JointState + TF (measured/model transform)"
         status["tcp_pose_note"] = "TF lookup reference_frame <- selected gripper_tcp"
+        if _stage1_on(self):
+            status["hardware_runtime_mode"] = self._hardware_mode
+            status["stage1_velocity_mm_s"] = self.core.active.linear_mm_s if self.core.active else 0.0
         out = String()
         out.data = json.dumps(status, sort_keys=True)
         self._status_pub.publish(out)
+
+    def _publish_stage1_velocity(self, velocity_mm_s: float) -> None:
+        publisher = getattr(self, "_stage1_pub", None)
+        if publisher is None:
+            return
+        publisher.publish(Float64(data=float(velocity_mm_s)))
+        trace_record(self, "velocity_published", velocity_mm_s=float(velocity_mm_s),
+                     source=getattr(self.core, "active_input_source", None),
+                     stop_reason=getattr(self.core, "last_stop_reason", None),
+                     active=repr(self.core.active))
+
+    def _refresh_stage1_velocity(self) -> None:
+        # Nonzero velocity is published only when a motion command arrives.
+        # Repeating it here would keep the hardware watchdog fresh after the
+        # command source has already died.
+        if not _stage1_on(self) or self.core.arm != "arm_a" or self._manual_transition != "MANUAL_READY":
+            return
+        motion = self.core.active
+        if (self._servo_motion_allowed and motion is not None and
+                is_stage1_motion(motion.arm, motion.frame, motion.axis, motion.sign)):
+            return
+        self._publish_stage1_velocity(0.0)
+
+    def _handle_stage1_motion(self, data: dict[str, Any]) -> None:
+        if not self._manual_ready or self._manual_transition != "MANUAL_READY":
+            self.get_logger().warning("motion ignored: manual control is not ready")
+            return
+        if not is_stage1_motion(self.core.arm, self.core.frame, str(data.get("axis", "")), int(data.get("sign", 0))):
+            raise ValueError("Stage 1 only permits Arm A / base / X+")
+        if not self._servo_motion_allowed:
+            raise ValueError("allow_real_motion is false")
+        self.core.command(data)
+        velocity = self.core.active.linear_mm_s
+        if not isfinite(velocity) or velocity <= 0.0:
+            raise ValueError("Stage 1 velocity must be finite and positive")
+        self._publish_stage1_velocity(velocity)
+
+    def _handle_stage1_enable(self, requested: bool, data: dict[str, Any]) -> None:
+        if self.core.arm != "arm_a":
+            self._manual_ready = False
+            self._manual_transition = "DENIED"
+            self.core.fault = "Stage 1 manual is Arm A only"
+            return
+        if not requested:
+            self._begin_stage1_exit("manual-release")
+            return
+        if self._manual_transition == "FAULT":
+            self._begin_fault_recovery()
+            return
+        if self._manual_transition not in {"AUTO", "DENIED"}:
+            self.get_logger().warning(f"manual request ignored while state={self._manual_transition}")
+            return
+        status = self._feedback.status(self.core.arm, float(self.config["safety"]["robot_state_timeout_ms"]) / 1000.0)
+        if status["joint_feedback"] != "ONLINE":
+            self._manual_transition = "DENIED"
+            self.core.fault = "fresh joint state required before manual cartesian"
+            return
+        self._manual_ready = False
+        self._manual_transition = "REQUESTING"
+        assert self._controller_client is not None
+        self._controller_client.request_manual("arm_a", self._on_stage1_controllers_off)
+
+    def _on_stage1_controllers_off(self, ok: bool, message: str) -> None:
+        if not ok:
+            self._manual_transition = "DENIED"
+            self.core.fault = message
+            return
+        if self._enter_client is None or not self._enter_client.service_is_ready():
+            self._restore_jtc_after_failed_enter("manual enter service unavailable")
+            return
+        future = self._enter_client.call_async(Trigger.Request())
+        future.add_done_callback(self._on_stage1_entered)
+
+    def _on_stage1_entered(self, future) -> None:
+        try:
+            response = future.result()
+        except Exception as exc:
+            self._restore_jtc_after_failed_enter(f"manual enter failed: {exc}")
+            return
+        message = "" if response is None else str(response.message)
+        if response is None or not response.success:
+            if message.startswith("SERVO_ACTIVE"):
+                self._restore_jtc_after_failed_enter(message or "manual enter failed")
+            else:
+                self._manual_ready = False
+                self._manual_transition = "FAULT"
+                self.core.fault = message or "manual enter failed; JTC left inactive"
+            return
+        self._hardware_mode = "MANUAL_CARTESIAN"
+        self._manual_ready = True
+        self._manual_transition = "MANUAL_READY"
+        self.core.fault = ""
+        self.core.command({"type": "enable", "value": True})
+        self._publish_stage1_velocity(0.0)
+
+    def _restore_jtc_after_failed_enter(self, message: str) -> None:
+        self._manual_ready = False
+        self._manual_transition = "RELEASING"
+        self.core.fault = message
+        assert self._controller_client is not None
+        if not self._controller_client.release_manual("arm_a", self._on_failed_enter_jtc):
+            self._manual_transition = "FAULT"
+            self.core.fault = f"{message}; JTC restore unavailable"
+
+    def _on_failed_enter_jtc(self, ok: bool, message: str) -> None:
+        if ok:
+            self._hardware_mode = "SERVO_ACTIVE"
+            self._manual_transition = "AUTO"
+            return
+        self._manual_transition = "FAULT"
+        self.core.fault = f"{self.core.fault}; JTC restore failed: {message}"
+
+    def _begin_stage1_exit(self, reason: str) -> None:
+        self._manual_ready = False
+        self.core.command({"type": "stop", "reason": reason})
+        self.core.command({"type": "enable", "value": False})
+        self._manual_transition = "RELEASING"
+        self._publish_stage1_velocity(0.0)
+        if self._exit_zero_timer is not None:
+            return
+        self._exit_zero_timer = self.create_timer(0.02, self._stage1_exit_after_zero)
+
+    def _stage1_exit_after_zero(self) -> None:
+        timer = self._exit_zero_timer
+        self._exit_zero_timer = None
+        if timer is None:
+            return
+        timer.cancel()
+        self.destroy_timer(timer)
+        if self._exit_client is None or not self._exit_client.service_is_ready():
+            self._manual_transition = "FAULT"
+            self.core.fault = "manual exit service unavailable; JTC was not activated"
+            return
+        future = self._exit_client.call_async(Trigger.Request())
+        future.add_done_callback(self._on_stage1_hardware_exited)
+
+    def _on_stage1_hardware_exited(self, future) -> None:
+        try:
+            response = future.result()
+        except Exception as exc:
+            self._manual_transition = "FAULT"
+            self.core.fault = f"manual exit failed: {exc}; JTC was not activated"
+            return
+        if response is None or not response.success:
+            self._manual_transition = "FAULT"
+            self.core.fault = ("" if response is None else str(response.message)) or "manual exit failed; JTC was not activated"
+            return
+        self._hardware_mode = "SERVO_ACTIVE"
+        assert self._controller_client is not None
+        if not self._controller_client.release_manual("arm_a", self._on_release_result):
+            self._manual_transition = "FAULT"
+            self.core.fault = "JTC activate unavailable after ServoJ restore"
+
+    def _recover_stage1(self, state: str) -> None:
+        if state == "FAULT":
+            self._fault_recovery_failed(f"controller pair is not safely recoverable: {state}")
+            return
+        self._publish_stage1_velocity(0.0)
+        mode = getattr(self, "_hardware_mode", "")
+        if mode == "":
+            self._fault_recovery_failed("hardware runtime mode unknown; JTC was not activated")
+            return
+        if mode == "MANUAL_CARTESIAN":
+            if self._exit_client is None or not self._exit_client.service_is_ready():
+                self._fault_recovery_failed("manual exit service unavailable during fault recovery")
+                return
+            future = self._exit_client.call_async(Trigger.Request())
+            future.add_done_callback(lambda done, pair_state=state: self._after_stage1_fault_exit(done, pair_state))
+            return
+        if mode != "SERVO_ACTIVE":
+            self._fault_recovery_failed(f"hardware mode {mode} is not ServoJ; JTC was not activated")
+            return
+        if state == "AUTO":
+            self._on_fault_recovery_auto(True, "automatic controller already active")
+            return
+        self._manual_transition = "RECOVERY_RELEASING"
+        assert self._controller_client is not None
+        if not self._controller_client.release_manual(self.core.arm, self._on_fault_recovery_auto):
+            self._fault_recovery_failed("controller_manager AUTO restore request unavailable")
+
+    def _after_stage1_fault_exit(self, future, state: str) -> None:
+        try:
+            response = future.result()
+        except Exception as exc:
+            self._fault_recovery_failed(f"manual exit failed during fault recovery: {exc}")
+            return
+        if response is None or not response.success:
+            self._fault_recovery_failed(
+                ("" if response is None else str(response.message)) or "manual exit failed during fault recovery")
+            return
+        self._hardware_mode = "SERVO_ACTIVE"
+        self._recover_stage1(state)
+
+    def _on_hardware_mode(self, msg: String) -> None:
+        self._hardware_mode = str(msg.data)
+
+    def _on_stage1_error(self, msg: Int32) -> None:
+        code = int(msg.data)
+        if code == 0 or self._manual_transition in {"RELEASING", "AUTO", "MOCK"}:
+            return
+        self._publish_stage1_velocity(0.0)
+        self._manual_ready = False
+        self.core.command({"type": "stop", "reason": "servocart-error", "keep_claim": True})
+        self._manual_transition = "FAULT"
+        self.core.fault = f"ServoCart error {code}"
+
+    def _shutdown_stage1(self) -> None:
+        self._manual_ready = False
+        self._manual_transition = "RELEASING"
+        self._publish_stage1_velocity(0.0)
+        if self._exit_client is None or not self._exit_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().error("manager shutdown: manual exit service unavailable; JTC was not activated")
+            return
+        future = self._exit_client.call_async(Trigger.Request())
+        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+        response = future.result()
+        if response is None or not response.success:
+            self.get_logger().error("manager shutdown: manual exit failed; JTC was not activated")
+            return
+        self._hardware_mode = "SERVO_ACTIVE"
+        done: list[tuple[bool, str]] = []
+        if self._controller_client is None or not self._controller_client.release_manual(
+                "arm_a", lambda ok, message: done.append((ok, message))):
+            self.get_logger().error("manager shutdown: JTC activate unavailable after ServoJ restore")
+            return
+        deadline = monotonic() + 3.0
+        while not done and monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.05)
+        if not done or not done[0][0]:
+            self.get_logger().error("manager shutdown: JTC activate failed after ServoJ restore")
+
+
+class _Stage1CommandBackend:
+    """Records manual motion without publishing MoveIt Servo twists or joint targets."""
+
+    name = "servocart"
+
+    def start(self, motion: Motion) -> None:
+        del motion
+
+    def stop(self, arm: str, reason: str) -> None:
+        del arm, reason
+
+    def gripper(self, arm: str, command: str) -> None:
+        del arm, command
 
 
 class _ServoTopicBackend:
@@ -545,6 +881,8 @@ def main() -> None:
         pass
     finally:
         node.shutdown_safely()
+        if node._manual_trace is not None:
+            node._manual_trace.close()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

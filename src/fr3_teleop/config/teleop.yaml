@@ -31,8 +31,18 @@ teleop:
   default_frame: world
   linear_speed_mm_s: 5.0
   angular_speed_deg_s: 2.0
-  max_linear_speed_mm_s: 60.0
-  max_angular_speed_deg_s: 10.0
+  # Legacy Stage 1 defaults retained for configuration compatibility.
+  # Stage 1 now uses ControlCore's linear_speed_mm_s / set_speed and motion.scale.
+  default_linear_speed_mm_s: 10.0
+  default_angular_speed_deg_s: 5.0
+  max_linear_speed_mm_s: 50.0
+  max_angular_speed_deg_s: 20.0
+  command_watchdog_ms: 150
+  # Arm A real manual bypasses MoveIt Servo and the position integrator.
+  # Arm B is unchanged. Mock backend ignores this block.
+  manual_cartesian:
+    enabled: true
+    arm: arm_a
   input_rate_hz: 20
   input_timeout_ms: 250
   allow_simultaneous_control: false
